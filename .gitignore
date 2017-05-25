@@ -25,6 +25,9 @@ parent.iml
 **/pom.xml
 /nbproject
 /nb-build
+maven-build/
+test-lib/
+lib/
 
 /solr/package
 
@@ -33,7 +36,6 @@ parent.iml
 /solr/example/webapps/*
 /solr/example/logs/*.log
 /solr/example/**/data
-/solr/example/solr/lib
 /solr/example/solr/logs
 /solr/example/solr/zoo_data
 /solr/example/work/*
@@ -43,7 +45,3 @@ parent.iml
 /solr/example/example-DIH/**/dataimport.properties
 /solr/example/example-DIH/solr/mail/lib/*.jar
 
-solr/contrib/dataimporthandler/test-lib/
-solr/contrib/morphlines-core/test-lib/
-
-solr/core/test-lib/
