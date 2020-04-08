@@ -29,32 +29,36 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import org.apache.lucene.analysis.util.ResourceLoader;
 import org.apache.lucene.analysis.util.ResourceLoaderAware;
+import org.apache.solr.api.Api;
+import org.apache.solr.api.ApiBag;
+import org.apache.solr.api.ApiSupport;
 import org.apache.solr.cloud.CloudUtil;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.util.StrUtils;
 import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.handler.component.SearchComponent;
+import org.apache.solr.pkg.PackagePluginHolder;
 import org.apache.solr.request.SolrRequestHandler;
+import org.apache.solr.update.processor.UpdateRequestProcessorChain;
+import org.apache.solr.update.processor.UpdateRequestProcessorFactory;
 import org.apache.solr.util.CryptoKeys;
 import org.apache.solr.util.SimplePostTool;
 import org.apache.solr.util.plugin.NamedListInitializedPlugin;
 import org.apache.solr.util.plugin.PluginInfoInitialized;
 import org.apache.solr.util.plugin.SolrCoreAware;
-import org.apache.solr.api.Api;
-import org.apache.solr.api.ApiBag;
-import org.apache.solr.api.ApiSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static java.util.Collections.singletonMap;
-import static org.apache.solr.common.params.CommonParams.NAME;
 import static org.apache.solr.api.ApiBag.HANDLER_NAME;
+import static org.apache.solr.common.params.CommonParams.NAME;
 
 /**
  * This manages the lifecycle of a set of plugin of the same type .
@@ -95,7 +99,7 @@ public class PluginBag<T> implements AutoCloseable {
     this(klass, core, false);
   }
 
-  static void initInstance(Object inst, PluginInfo info) {
+  public static void initInstance(Object inst, PluginInfo info) {
     if (inst instanceof PluginInfoInitialized) {
       ((PluginInfoInitialized) inst).init(info);
     } else if (inst instanceof NamedListInitializedPlugin) {
@@ -122,22 +126,35 @@ public class PluginBag<T> implements AutoCloseable {
     return result;
   }
 
-  PluginHolder<T> createPlugin(PluginInfo info) {
+  public PluginHolder<T> createPlugin(PluginInfo info) {
     if ("true".equals(String.valueOf(info.attributes.get("runtimeLib")))) {
       log.debug(" {} : '{}'  created with runtimeLib=true ", meta.getCleanTag(), info.name);
-      return new LazyPluginHolder<>(meta, info, core, core.getMemClassLoader());
+      LazyPluginHolder<T> holder = new LazyPluginHolder<>(meta, info, core, RuntimeLib.isEnabled() ?
+          core.getMemClassLoader() :
+          core.getResourceLoader(), true);
+
+      return meta.clazz == UpdateRequestProcessorFactory.class ?
+          (PluginHolder<T>) new UpdateRequestProcessorChain.LazyUpdateProcessorFactoryHolder(holder) :
+          holder;
     } else if ("lazy".equals(info.attributes.get("startup")) && meta.options.contains(SolrConfig.PluginOpts.LAZY)) {
       log.debug("{} : '{}' created with startup=lazy ", meta.getCleanTag(), info.name);
-      return new LazyPluginHolder<T>(meta, info, core, core.getResourceLoader());
+      return new LazyPluginHolder<T>(meta, info, core, core.getResourceLoader(), false);
     } else {
-      T inst = core.createInstance(info.className, (Class<T>) meta.clazz, meta.getCleanTag(), null, core.getResourceLoader());
-      initInstance(inst, info);
-      return new PluginHolder<>(info, inst);
+      if (info.pkgName != null) {
+        PackagePluginHolder<T> holder = new PackagePluginHolder<>(info, core, meta);
+        return holder;
+      } else {
+        T inst = core.createInstance(info.className, (Class<T>) meta.clazz, meta.getCleanTag(), null, core.getResourceLoader(info.pkgName));
+        initInstance(inst, info);
+        return new PluginHolder<>(info, inst);
+      }
     }
   }
 
-  /** make a plugin available in an alternate name. This is an internal API and not for public use
-   * @param src key in which the plugin is already registered
+  /**
+   * make a plugin available in an alternate name. This is an internal API and not for public use
+   *
+   * @param src    key in which the plugin is already registered
    * @param target the new key in which the plugin should be aliased to. If target exists already, the alias fails
    * @return flag if the operation is successful or not
    */
@@ -187,7 +204,7 @@ public class PluginBag<T> implements AutoCloseable {
     return old == null ? null : old.get();
   }
 
-  PluginHolder<T> put(String name, PluginHolder<T> plugin) {
+  public PluginHolder<T> put(String name, PluginHolder<T> plugin) {
     Boolean registerApi = null;
     Boolean disableHandler = null;
     if (plugin.pluginInfo != null) {
@@ -223,11 +240,15 @@ public class PluginBag<T> implements AutoCloseable {
           apiBag.registerLazy((PluginHolder<SolrRequestHandler>) plugin, plugin.pluginInfo);
       }
     }
-    if(disableHandler == null) disableHandler = Boolean.FALSE;
+    if (disableHandler == null) disableHandler = Boolean.FALSE;
     PluginHolder<T> old = null;
-    if(!disableHandler) old = registry.put(name, plugin);
+    if (!disableHandler) old = registry.put(name, plugin);
     if (plugin.pluginInfo != null && plugin.pluginInfo.isDefault()) setDefault(name);
     if (plugin.isLoaded()) registerMBean(plugin.get(), core, name);
+    // old instance has been replaced - close it to prevent mem leaks
+    if (old != null && old != plugin) {
+      closeQuietly(old);
+    }
     return old;
   }
 
@@ -294,8 +315,8 @@ public class PluginBag<T> implements AutoCloseable {
 
   private void registerMBean(Object inst, SolrCore core, String pluginKey) {
     if (core == null) return;
-    if (inst instanceof SolrInfoMBean) {
-      SolrInfoMBean mBean = (SolrInfoMBean) inst;
+    if (inst instanceof SolrInfoBean) {
+      SolrInfoBean mBean = (SolrInfoBean) inst;
       String name = (inst instanceof SolrRequestHandler) ? pluginKey : mBean.getName();
       core.registerInfoBean(name, mBean);
     }
@@ -316,12 +337,20 @@ public class PluginBag<T> implements AutoCloseable {
     }
   }
 
+  public static void closeQuietly(Object inst)  {
+    try {
+      if (inst != null && inst instanceof AutoCloseable) ((AutoCloseable) inst).close();
+    } catch (Exception e) {
+      log.error("Error closing "+ inst , e);
+    }
+  }
+
   /**
    * An indirect reference to a plugin. It just wraps a plugin instance.
    * subclasses may choose to lazily load the plugin
    */
-  public static class PluginHolder<T> implements AutoCloseable {
-    private T inst;
+  public static class PluginHolder<T> implements Supplier<T>,  AutoCloseable {
+    protected T inst;
     protected final PluginInfo pluginInfo;
     boolean registerAPI = false;
 
@@ -359,6 +388,10 @@ public class PluginBag<T> implements AutoCloseable {
       if (pluginInfo != null) return pluginInfo.className;
       return null;
     }
+
+    public PluginInfo getPluginInfo() {
+      return pluginInfo;
+    }
   }
 
   /**
@@ -371,15 +404,17 @@ public class PluginBag<T> implements AutoCloseable {
     protected SolrException solrException;
     private final SolrCore core;
     protected ResourceLoader resourceLoader;
+    private final boolean isRuntimeLib;
 
 
-    LazyPluginHolder(SolrConfig.SolrPluginInfo pluginMeta, PluginInfo pluginInfo, SolrCore core, ResourceLoader loader) {
+    LazyPluginHolder(SolrConfig.SolrPluginInfo pluginMeta, PluginInfo pluginInfo, SolrCore core, ResourceLoader loader, boolean isRuntimeLib) {
       super(pluginInfo);
       this.pluginMeta = pluginMeta;
+      this.isRuntimeLib = isRuntimeLib;
       this.core = core;
       this.resourceLoader = loader;
       if (loader instanceof MemClassLoader) {
-        if (!"true".equals(System.getProperty("enable.runtime.lib"))) {
+        if (!RuntimeLib.isEnabled()) {
           String s = "runtime library loading is not enabled, start Solr with -Denable.runtime.lib=true";
           log.warn(s);
           solrException = new SolrException(SolrException.ErrorCode.SERVER_ERROR, s);
@@ -413,7 +448,19 @@ public class PluginBag<T> implements AutoCloseable {
         loader.loadJars();
       }
       Class<T> clazz = (Class<T>) pluginMeta.clazz;
-      T localInst = core.createInstance(pluginInfo.className, clazz, pluginMeta.getCleanTag(), null, resourceLoader);
+      T localInst = null;
+      try {
+        localInst = core.createInstance(pluginInfo.className, clazz, pluginMeta.getCleanTag(), null, resourceLoader);
+      } catch (SolrException e) {
+        if (isRuntimeLib && !(resourceLoader instanceof MemClassLoader)) {
+          throw new SolrException(SolrException.ErrorCode.getErrorCode(e.code()),
+              e.getMessage() + ". runtime library loading is not enabled, start Solr with -Denable.runtime.lib=true",
+              e.getCause());
+        }
+        throw e;
+
+
+      }
       initInstance(localInst, pluginInfo);
       if (localInst instanceof SolrCoreAware) {
         SolrResourceLoader.assertAwareCompatibility(SolrCoreAware.class, localInst);
@@ -438,7 +485,7 @@ public class PluginBag<T> implements AutoCloseable {
    * This represents a Runtime Jar. A jar requires two details , name and version
    */
   public static class RuntimeLib implements PluginInfoInitialized, AutoCloseable {
-    private String name, version, sig;
+    private String name, version, sig, sha512, url;
     private BlobRepository.BlobContentRef<ByteBuffer> jarContent;
     private final CoreContainer coreContainer;
     private boolean verified = false;
@@ -446,25 +493,54 @@ public class PluginBag<T> implements AutoCloseable {
     @Override
     public void init(PluginInfo info) {
       name = info.attributes.get(NAME);
-      Object v = info.attributes.get("version");
-      if (name == null || v == null) {
-        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "runtimeLib must have name and version");
-      }
-      version = String.valueOf(v);
+      url = info.attributes.get("url");
       sig = info.attributes.get("sig");
+      if(url == null) {
+        Object v = info.attributes.get("version");
+        if (name == null || v == null) {
+          throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "runtimeLib must have name and version");
+        }
+        version = String.valueOf(v);
+      } else {
+        sha512 = info.attributes.get("sha512");
+        if(sha512 == null){
+          throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "runtimeLib with url must have a 'sha512' attribute");
+        }
+        ByteBuffer buf = null;
+        buf = coreContainer.getBlobRepository().fetchFromUrl(name, url);
+
+        String digest = BlobRepository.sha512Digest(buf);
+        if(!sha512.equals(digest))  {
+          throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, StrUtils.formatString(BlobRepository.INVALID_JAR_MSG, url, sha512, digest)  );
+        }
+        log.info("dynamic library verified {}, sha512: {}", url, sha512);
+
+      }
+
     }
 
     public RuntimeLib(SolrCore core) {
-      coreContainer = core.getCoreDescriptor().getCoreContainer();
+      coreContainer = core.getCoreContainer();
     }
 
+    public String getUrl(){
+      return url;
+    }
 
     void loadJar() {
       if (jarContent != null) return;
       synchronized (this) {
         if (jarContent != null) return;
-        jarContent = coreContainer.getBlobRepository().getBlobIncRef(name + "/" + version);
+
+        jarContent = url == null?
+            coreContainer.getBlobRepository().getBlobIncRef(name + "/" + version):
+            coreContainer.getBlobRepository().getBlobIncRef(name, null,url,sha512);
+
       }
+    }
+
+    public static boolean isEnabled() {
+      return Boolean.getBoolean("enable.runtime.lib");
     }
 
     public String getName() {
@@ -482,7 +558,7 @@ public class PluginBag<T> implements AutoCloseable {
 
     public ByteBuffer getFileContent(String entryName) throws IOException {
       if (jarContent == null)
-        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "jar not available: " + name + "/" + version);
+        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "jar not available: " + name  );
       return getFileContent(jarContent.blob, entryName);
 
     }
@@ -521,7 +597,11 @@ public class PluginBag<T> implements AutoCloseable {
       List<RuntimeLib> l = new ArrayList<>(libs.size());
       for (PluginInfo lib : libs) {
         RuntimeLib rtl = new RuntimeLib(core);
-        rtl.init(lib);
+        try {
+          rtl.init(lib);
+        } catch (Exception e) {
+          log.error("error loading runtime library", e);
+        }
         l.add(rtl);
       }
       return l;
@@ -540,7 +620,6 @@ public class PluginBag<T> implements AutoCloseable {
       if (keys.isEmpty()) {
         if (sig == null) {
           verified = true;
-          log.info("A run time lib {} is loaded  without verification ", name);
           return;
         } else {
           throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "No public keys are available in ZK to verify signature for runtime lib  " + name);

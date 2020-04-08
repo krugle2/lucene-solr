@@ -105,6 +105,10 @@ public class TestTaxonomyFacetCounts extends FacetTestCase {
 
     Facets facets = getAllFacets(FacetsConfig.DEFAULT_INDEX_FIELD_NAME, searcher, taxoReader, config);
 
+    // Publish Date is hierarchical, so we should have loaded all 3 int[]:
+    assertTrue(((TaxonomyFacets) facets).siblingsLoaded());
+    assertTrue(((TaxonomyFacets) facets).childrenLoaded());
+
     // Retrieve & verify results:
     assertEquals("dim=Publish Date path=[] value=5 childCount=3\n  2010 (2)\n  2012 (2)\n  1999 (1)\n", facets.getTopChildren(10, "Publish Date").toString());
     assertEquals("dim=Author path=[] value=5 childCount=4\n  Lisa (2)\n  Bob (1)\n  Susan (1)\n  Frank (1)\n", facets.getTopChildren(10, "Author").toString());
@@ -330,6 +334,10 @@ public class TestTaxonomyFacetCounts extends FacetTestCase {
     assertEquals(1, facets.getSpecificValue("dim", "test\u001Fone"));
     assertEquals(1, facets.getSpecificValue("dim", "test\u001Etwo"));
 
+    // no hierarchy
+    assertFalse(((TaxonomyFacets) facets).siblingsLoaded());
+    assertFalse(((TaxonomyFacets) facets).childrenLoaded());
+
     FacetResult result = facets.getTopChildren(10, "dim");
     assertEquals("dim=dim path=[] value=-1 childCount=2\n  test\u001Fone (1)\n  test\u001Etwo (1)\n", result.toString());
     writer.close();
@@ -393,7 +401,7 @@ public class TestTaxonomyFacetCounts extends FacetTestCase {
     FacetsConfig config = new FacetsConfig();
     config.setMultiValued("dim", true);
     
-    int numLabels = TestUtil.nextInt(random(), 40000, 100000);
+    int numLabels = TEST_NIGHTLY ? TestUtil.nextInt(random(), 40000, 100000) : TestUtil.nextInt(random(), 4000, 10000);
     
     Document doc = new Document();
     doc.add(newTextField("field", "text", Field.Store.NO));

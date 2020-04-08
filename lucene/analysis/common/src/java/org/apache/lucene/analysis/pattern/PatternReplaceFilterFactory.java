@@ -36,8 +36,15 @@ import java.util.regex.Pattern;
  * &lt;/fieldType&gt;</pre>
  *
  * @see PatternReplaceFilter
+ *
+ * @since 3.1
+ * @lucene.spi {@value #NAME}
  */
 public class PatternReplaceFilterFactory extends TokenFilterFactory {
+
+  /** SPI name */
+  public static final String NAME = "patternReplace";
+
   final Pattern pattern;
   final String replacement;
   final boolean replaceAll;
@@ -51,6 +58,11 @@ public class PatternReplaceFilterFactory extends TokenFilterFactory {
     if (!args.isEmpty()) {
       throw new IllegalArgumentException("Unknown parameters: " + args);
     }
+  }
+
+  /** Default ctor for compatibility with SPI */
+  public PatternReplaceFilterFactory() {
+    throw defaultCtorException();
   }
 
   @Override

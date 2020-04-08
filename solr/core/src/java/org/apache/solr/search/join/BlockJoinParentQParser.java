@@ -34,40 +34,46 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.search.BitsFilteredDocIdSet;
 import org.apache.solr.search.Filter;
 import org.apache.solr.search.QParser;
-import org.apache.solr.search.QueryParsing;
 import org.apache.solr.search.SolrCache;
 import org.apache.solr.search.SolrConstantScoreQuery;
 import org.apache.solr.search.SyntaxError;
 
-public class BlockJoinParentQParser extends QParser {
+public class BlockJoinParentQParser extends FiltersQParser {
   /** implementation detail subject to change */
-  public String CACHE_NAME="perSegFilter";
+  public static final String CACHE_NAME="perSegFilter";
 
   protected String getParentFilterLocalParamName() {
     return "which";
+  }
+
+  @Override
+  protected String getFiltersParamName() {
+    return "filters";
   }
 
   BlockJoinParentQParser(String qstr, SolrParams localParams, SolrParams params, SolrQueryRequest req) {
     super(qstr, localParams, params, req);
   }
 
-  @Override
-  public Query parse() throws SyntaxError {
+  protected Query parseParentFilter() throws SyntaxError {
     String filter = localParams.get(getParentFilterLocalParamName());
-    String scoreMode = localParams.get("score", ScoreMode.None.name());
     QParser parentParser = subQuery(filter, null);
     Query parentQ = parentParser.getQuery();
+    return parentQ;
+  }
 
-    String queryText = localParams.get(QueryParsing.V);
-    // there is no child query, return parent filter from cache
-    if (queryText == null || queryText.length()==0) {
-                  SolrConstantScoreQuery wrapped = new SolrConstantScoreQuery(getFilter(parentQ));
-                  wrapped.setCache(false);
-                  return wrapped;
-    }
-    QParser childrenParser = subQuery(queryText, null);
-    Query childrenQuery = childrenParser.getQuery();
-    return createQuery(parentQ, childrenQuery, scoreMode);
+  @Override
+  protected Query wrapSubordinateClause(Query subordinate) throws SyntaxError {
+    String scoreMode = localParams.get("score", ScoreMode.None.name());
+    Query parentQ = parseParentFilter();
+    return createQuery(parentQ, subordinate, scoreMode);
+  }
+
+  @Override
+  protected Query noClausesQuery() throws SyntaxError {
+    SolrConstantScoreQuery wrapped = new SolrConstantScoreQuery(getFilter(parseParentFilter()));
+    wrapped.setCache(false);
+    return wrapped;
   }
 
   protected Query createQuery(final Query parentList, Query query, String scoreMode) throws SyntaxError {
@@ -75,25 +81,31 @@ public class BlockJoinParentQParser extends QParser {
   }
 
   BitDocIdSetFilterWrapper getFilter(Query parentList) {
-    SolrCache parentCache = req.getSearcher().getCache(CACHE_NAME);
+    return getCachedFilter(req, parentList);
+  }
+
+  public static BitDocIdSetFilterWrapper getCachedFilter(final SolrQueryRequest request, Query parentList) {
+    @SuppressWarnings("unchecked")
+    SolrCache<Query, Filter> parentCache = request.getSearcher().getCache(CACHE_NAME);
     // lazily retrieve from solr cache
-    Filter filter = null;
-    if (parentCache != null) {
-      filter = (Filter) parentCache.get(parentList);
-    }
     BitDocIdSetFilterWrapper result;
-    if (filter instanceof BitDocIdSetFilterWrapper) {
-      result = (BitDocIdSetFilterWrapper) filter;
-    } else {
-      result = new BitDocIdSetFilterWrapper(createParentFilter(parentList));
-      if (parentCache != null) {
+    if (parentCache != null) {
+      Filter filter = parentCache.computeIfAbsent(parentList,
+          query -> new BitDocIdSetFilterWrapper(createParentFilter(query)));
+      if (filter instanceof BitDocIdSetFilterWrapper) {
+        result = (BitDocIdSetFilterWrapper) filter;
+      } else {
+        result = new BitDocIdSetFilterWrapper(createParentFilter(parentList));
+        // non-atomic update of existing entry to ensure strong-typing
         parentCache.put(parentList, result);
       }
+    } else {
+      result = new BitDocIdSetFilterWrapper(createParentFilter(parentList));
     }
     return result;
   }
 
-  private BitSetProducer createParentFilter(Query parentQ) {
+  private static BitSetProducer createParentFilter(Query parentQ) {
     return new QueryBitSetProducer(parentQ);
   }
 
@@ -105,16 +117,16 @@ public class BlockJoinParentQParser extends QParser {
       super(childQuery, parentsFilter, scoreMode);
       parentQuery = parentList;
     }
-    
+
     public Query getParentQuery(){
       return parentQuery;
     }
   }
 
   // We need this wrapper since BitDocIdSetFilter does not extend Filter
-  static class BitDocIdSetFilterWrapper extends Filter {
+  public static class BitDocIdSetFilterWrapper extends Filter {
 
-    final BitSetProducer filter;
+    private final BitSetProducer filter;
 
     BitDocIdSetFilterWrapper(BitSetProducer filter) {
       this.filter = filter;
@@ -129,6 +141,10 @@ public class BlockJoinParentQParser extends QParser {
       return BitsFilteredDocIdSet.wrap(new BitDocIdSet(set), acceptDocs);
     }
 
+    public BitSetProducer getFilter() {
+      return filter;
+    }
+
     @Override
     public String toString(String field) {
       return getClass().getSimpleName() + "(" + filter + ")";
@@ -137,14 +153,13 @@ public class BlockJoinParentQParser extends QParser {
     @Override
     public boolean equals(Object other) {
       return sameClassAs(other) &&
-             Objects.equals(filter, getClass().cast(other).filter);
+             Objects.equals(filter, getClass().cast(other).getFilter());
     }
 
     @Override
     public int hashCode() {
       return classHash() + filter.hashCode();
     }
-
   }
 
 }

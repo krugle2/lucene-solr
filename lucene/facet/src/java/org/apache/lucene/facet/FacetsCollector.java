@@ -27,8 +27,9 @@ import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MultiCollector;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.Scorable;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.Scorer;
+import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.SimpleCollector;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopDocs;
@@ -37,9 +38,9 @@ import org.apache.lucene.search.TopFieldCollector;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TopScoreDocCollector;
 import org.apache.lucene.search.TotalHitCountCollector;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.util.ArrayUtil;
-import org.apache.lucene.util.BitDocIdSet;
-import org.apache.lucene.util.FixedBitSet;
+import org.apache.lucene.util.DocIdSetBuilder;
 
 /** Collects hits for subsequent faceting.  Once you've run
  *  a search and collect hits into this, instantiate one of
@@ -51,29 +52,13 @@ import org.apache.lucene.util.FixedBitSet;
 public class FacetsCollector extends SimpleCollector implements Collector {
 
   private LeafReaderContext context;
-  private Scorer scorer;
+  private Scorable scorer;
   private int totalHits;
   private float[] scores;
   private final boolean keepScores;
   private final List<MatchingDocs> matchingDocs = new ArrayList<>();
-  private Docs docs;
+  private DocIdSetBuilder docsBuilder;
   
-  /**
-   * Used during collection to record matching docs and then return a
-   * {@link DocIdSet} that contains them.
-   */
-  protected static abstract class Docs {
-    
-    /** Solr constructor. */
-    public Docs() {}
-    
-    /** Record the given document. */
-    public abstract void addDoc(int docId) throws IOException;
-    
-    /** Return the {@link DocIdSet} which contains all the recorded docs. */
-    public abstract DocIdSet getDocIdSet();
-  }
-
   /**
    * Holds the documents that were matched in the {@link org.apache.lucene.index.LeafReaderContext}.
    * If scores were required, then {@code scores} is not null.
@@ -112,27 +97,6 @@ public class FacetsCollector extends SimpleCollector implements Collector {
     this.keepScores = keepScores;
   }
   
-  /**
-   * Creates a {@link Docs} to record hits. The default uses {@link FixedBitSet}
-   * to record hits and you can override to e.g. record the docs in your own
-   * {@link DocIdSet}.
-   */
-  protected Docs createDocs(final int maxDoc) {
-    return new Docs() {
-      private final FixedBitSet bits = new FixedBitSet(maxDoc);
-      
-      @Override
-      public void addDoc(int docId) throws IOException {
-        bits.set(docId);
-      }
-      
-      @Override
-      public DocIdSet getDocIdSet() {
-        return new BitDocIdSet(bits);
-      }
-    };
-  }
-
   /** True if scores were saved. */
   public final boolean getKeepScores() {
     return keepScores;
@@ -143,9 +107,9 @@ public class FacetsCollector extends SimpleCollector implements Collector {
    * visited segment.
    */
   public List<MatchingDocs> getMatchingDocs() {
-    if (docs != null) {
-      matchingDocs.add(new MatchingDocs(this.context, docs.getDocIdSet(), totalHits, scores));
-      docs = null;
+    if (docsBuilder != null) {
+      matchingDocs.add(new MatchingDocs(this.context, docsBuilder.build(), totalHits, scores));
+      docsBuilder = null;
       scores = null;
       context = null;
     }
@@ -155,7 +119,7 @@ public class FacetsCollector extends SimpleCollector implements Collector {
 
   @Override
   public final void collect(int doc) throws IOException {
-    docs.addDoc(doc);
+    docsBuilder.grow(1).add(doc);
     if (keepScores) {
       if (totalHits >= scores.length) {
         float[] newScores = new float[ArrayUtil.oversize(totalHits + 1, 4)];
@@ -168,21 +132,21 @@ public class FacetsCollector extends SimpleCollector implements Collector {
   }
 
   @Override
-  public boolean needsScores() {
-    return true;
+  public ScoreMode scoreMode() {
+    return ScoreMode.COMPLETE;
   }
 
   @Override
-  public final void setScorer(Scorer scorer) throws IOException {
+  public final void setScorer(Scorable scorer) throws IOException {
     this.scorer = scorer;
   }
     
   @Override
   protected void doSetNextReader(LeafReaderContext context) throws IOException {
-    if (docs != null) {
-      matchingDocs.add(new MatchingDocs(this.context, docs.getDocIdSet(), totalHits, scores));
+    if (docsBuilder != null) {
+      matchingDocs.add(new MatchingDocs(this.context, docsBuilder.build(), totalHits, scores));
     }
-    docs = createDocs(context.reader().maxDoc());
+    docsBuilder = new DocIdSetBuilder(context.reader().maxDoc());
     totalHits = 0;
     if (keepScores) {
       scores = new float[64]; // some initial size
@@ -193,7 +157,7 @@ public class FacetsCollector extends SimpleCollector implements Collector {
   /** Utility method, to search and also collect all hits
    *  into the provided {@link Collector}. */
   public static TopDocs search(IndexSearcher searcher, Query q, int n, Collector fc) throws IOException {
-    return doSearch(searcher, null, q, n, null, false, false, fc);
+    return doSearch(searcher, null, q, n, null, false, fc);
   }
 
   /** Utility method, to search and also collect all hits
@@ -202,22 +166,22 @@ public class FacetsCollector extends SimpleCollector implements Collector {
     if (sort == null) {
       throw new IllegalArgumentException("sort must not be null");
     }
-    return (TopFieldDocs) doSearch(searcher, null, q, n, sort, false, false, fc);
+    return (TopFieldDocs) doSearch(searcher, null, q, n, sort, false, fc);
   }
 
   /** Utility method, to search and also collect all hits
    *  into the provided {@link Collector}. */
-  public static TopFieldDocs search(IndexSearcher searcher, Query q, int n, Sort sort, boolean doDocScores, boolean doMaxScore, Collector fc) throws IOException {
+  public static TopFieldDocs search(IndexSearcher searcher, Query q, int n, Sort sort, boolean doDocScores, Collector fc) throws IOException {
     if (sort == null) {
       throw new IllegalArgumentException("sort must not be null");
     }
-    return (TopFieldDocs) doSearch(searcher, null, q, n, sort, doDocScores, doMaxScore, fc);
+    return (TopFieldDocs) doSearch(searcher, null, q, n, sort, doDocScores, fc);
   }
 
   /** Utility method, to search and also collect all hits
    *  into the provided {@link Collector}. */
   public static TopDocs searchAfter(IndexSearcher searcher, ScoreDoc after, Query q, int n, Collector fc) throws IOException {
-    return doSearch(searcher, after, q, n, null, false, false, fc);
+    return doSearch(searcher, after, q, n, null, false, fc);
   }
 
   /** Utility method, to search and also collect all hits
@@ -226,20 +190,20 @@ public class FacetsCollector extends SimpleCollector implements Collector {
     if (sort == null) {
       throw new IllegalArgumentException("sort must not be null");
     }
-    return doSearch(searcher, after, q, n, sort, false, false, fc);
+    return doSearch(searcher, after, q, n, sort, false, fc);
   }
 
   /** Utility method, to search and also collect all hits
    *  into the provided {@link Collector}. */
-  public static TopDocs searchAfter(IndexSearcher searcher, ScoreDoc after, Query q, int n, Sort sort, boolean doDocScores, boolean doMaxScore, Collector fc) throws IOException {
+  public static TopDocs searchAfter(IndexSearcher searcher, ScoreDoc after, Query q, int n, Sort sort, boolean doDocScores, Collector fc) throws IOException {
     if (sort == null) {
       throw new IllegalArgumentException("sort must not be null");
     }
-    return doSearch(searcher, after, q, n, sort, doDocScores, doMaxScore, fc);
+    return doSearch(searcher, after, q, n, sort, doDocScores, fc);
   }
 
   private static TopDocs doSearch(IndexSearcher searcher, ScoreDoc after, Query q, int n, Sort sort,
-                                  boolean doDocScores, boolean doMaxScore, Collector fc) throws IOException {
+                                  boolean doDocScores, Collector fc) throws IOException {
 
     int limit = searcher.getIndexReader().maxDoc();
     if (limit == 0) {
@@ -256,7 +220,7 @@ public class FacetsCollector extends SimpleCollector implements Collector {
     if (n==0) {
       TotalHitCountCollector totalHitCountCollector = new TotalHitCountCollector();
       searcher.search(q, MultiCollector.wrap(totalHitCountCollector, fc));
-      topDocs = new TopDocs(totalHitCountCollector.getTotalHits(), new ScoreDoc[0], Float.NaN);
+      topDocs = new TopDocs(new TotalHits(totalHitCountCollector.getTotalHits(), TotalHits.Relation.EQUAL_TO), new ScoreDoc[0]);
     } else {
       TopDocsCollector<?> hitsCollector;
       if (sort != null) {
@@ -265,18 +229,18 @@ public class FacetsCollector extends SimpleCollector implements Collector {
           // remove this
           throw new IllegalArgumentException("after must be a FieldDoc; got " + after);
         }
-        boolean fillFields = true;
         hitsCollector = TopFieldCollector.create(sort, n,
                                                  (FieldDoc) after,
-                                                 fillFields,
-                                                 doDocScores,
-                                                 doMaxScore);
+                                                 Integer.MAX_VALUE); // TODO: can we disable exact hit counts
       } else {
-        hitsCollector = TopScoreDocCollector.create(n, after);
+        hitsCollector = TopScoreDocCollector.create(n, after, Integer.MAX_VALUE);
       }
       searcher.search(q, MultiCollector.wrap(hitsCollector, fc));
     
       topDocs = hitsCollector.topDocs();
+      if (doDocScores) {
+        TopFieldCollector.populateScores(topDocs.scoreDocs, searcher, q);
+      }
     }
     return topDocs;
   }

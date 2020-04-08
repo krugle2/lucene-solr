@@ -23,24 +23,25 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
-import org.apache.commons.lang.StringUtils;
-import org.apache.lucene.store.Directory;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.solr.cloud.CloudDescriptor;
 import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
-import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.params.CoreAdminParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
+import org.apache.solr.common.util.Utils;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.CoreDescriptor;
-import org.apache.solr.core.DirectoryFactory;
 import org.apache.solr.core.SolrCore;
+import org.apache.solr.core.SolrInfoBean;
 import org.apache.solr.core.snapshots.SolrSnapshotManager;
 import org.apache.solr.core.snapshots.SolrSnapshotMetaDataManager;
 import org.apache.solr.core.snapshots.SolrSnapshotMetaDataManager.SnapshotMetaData;
 import org.apache.solr.handler.admin.CoreAdminHandler.CoreAdminOp;
+import org.apache.solr.metrics.SolrMetricManager;
 import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.update.UpdateLog;
 import org.apache.solr.util.NumberUtils;
@@ -51,7 +52,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.apache.solr.common.params.CommonParams.NAME;
+import static org.apache.solr.common.params.CoreAdminParams.COLLECTION;
 import static org.apache.solr.common.params.CoreAdminParams.CoreAdminAction.*;
+import static org.apache.solr.common.params.CoreAdminParams.REPLICA;
+import static org.apache.solr.common.params.CoreAdminParams.REPLICA_TYPE;
+import static org.apache.solr.common.params.CoreAdminParams.SHARD;
 import static org.apache.solr.handler.admin.CoreAdminHandler.COMPLETED;
 import static org.apache.solr.handler.admin.CoreAdminHandler.CallInfo;
 import static org.apache.solr.handler.admin.CoreAdminHandler.FAILED;
@@ -91,37 +96,53 @@ enum CoreAdminOperation implements CoreAdminOp {
   }),
   UNLOAD_OP(UNLOAD, it -> {
     SolrParams params = it.req.getParams();
-    String cname = params.get(CoreAdminParams.CORE);
+    String cname = params.required().get(CoreAdminParams.CORE);
+
     boolean deleteIndexDir = params.getBool(CoreAdminParams.DELETE_INDEX, false);
     boolean deleteDataDir = params.getBool(CoreAdminParams.DELETE_DATA_DIR, false);
     boolean deleteInstanceDir = params.getBool(CoreAdminParams.DELETE_INSTANCE_DIR, false);
+    boolean deleteMetricsHistory = params.getBool(CoreAdminParams.DELETE_METRICS_HISTORY, false);
+    CoreDescriptor cdescr = it.handler.coreContainer.getCoreDescriptor(cname);
     it.handler.coreContainer.unload(cname, deleteIndexDir, deleteDataDir, deleteInstanceDir);
+    if (deleteMetricsHistory) {
+      MetricsHistoryHandler historyHandler = it.handler.coreContainer.getMetricsHistoryHandler();
+      if (historyHandler != null) {
+        CloudDescriptor cd = cdescr != null ? cdescr.getCloudDescriptor() : null;
+        String registry;
+        if (cd == null) {
+          registry = SolrMetricManager.getRegistryName(SolrInfoBean.Group.core, cname);
+        } else {
+          String replicaName = Utils.parseMetricsReplicaName(cd.getCollectionName(), cname);
+          registry = SolrMetricManager.getRegistryName(SolrInfoBean.Group.core,
+              cd.getCollectionName(),
+              cd.getShardId(),
+              replicaName);
+        }
+        historyHandler.checkSystemCollection();
+        historyHandler.removeHistory(registry);
+      }
+    }
 
     assert TestInjection.injectNonExistentCoreExceptionAfterUnload(cname);
-
   }),
   RELOAD_OP(RELOAD, it -> {
     SolrParams params = it.req.getParams();
     String cname = params.required().get(CoreAdminParams.CORE);
 
-    try {
-      it.handler.coreContainer.reload(cname);
-    } catch (Exception ex) {
-      throw new SolrException(ErrorCode.SERVER_ERROR, "Error handling 'reload' action", ex);
-    }
+    it.handler.coreContainer.reload(cname);
   }),
   STATUS_OP(STATUS, new StatusOp()),
   SWAP_OP(SWAP, it -> {
     final SolrParams params = it.req.getParams();
-    final String cname = params.get(CoreAdminParams.CORE);
+    final String cname = params.required().get(CoreAdminParams.CORE);
     String other = params.required().get(CoreAdminParams.OTHER);
     it.handler.coreContainer.swap(cname, other);
   }),
 
   RENAME_OP(RENAME, it -> {
     SolrParams params = it.req.getParams();
-    String name = params.get(CoreAdminParams.OTHER);
-    String cname = params.get(CoreAdminParams.CORE);
+    String name = params.required().get(CoreAdminParams.OTHER);
+    String cname = params.required().get(CoreAdminParams.CORE);
 
     if (cname.equals(name)) return;
 
@@ -136,7 +157,7 @@ enum CoreAdminOperation implements CoreAdminOp {
 
   REQUESTRECOVERY_OP(REQUESTRECOVERY, it -> {
     final SolrParams params = it.req.getParams();
-    final String cname = params.get(CoreAdminParams.CORE, "");
+    final String cname = params.required().get(CoreAdminParams.CORE);
     log().info("It has been requested that we recover: core=" + cname);
     
     try (SolrCore core = it.handler.coreContainer.getCore(cname)) {
@@ -152,7 +173,7 @@ enum CoreAdminOperation implements CoreAdminOp {
 
   REQUESTBUFFERUPDATES_OP(REQUESTBUFFERUPDATES, it -> {
     SolrParams params = it.req.getParams();
-    String cname = params.get(CoreAdminParams.NAME, "");
+    String cname = params.required().get(CoreAdminParams.NAME);
     log().info("Starting to buffer updates on core:" + cname);
 
     try (SolrCore core = it.handler.coreContainer.getCore(cname)) {
@@ -178,7 +199,7 @@ enum CoreAdminOperation implements CoreAdminOp {
 
   REQUESTSTATUS_OP(REQUESTSTATUS, it -> {
     SolrParams params = it.req.getParams();
-    String requestId = params.get(CoreAdminParams.REQUESTID);
+    String requestId = params.required().get(CoreAdminParams.REQUESTID);
     log().info("Checking request status for : " + requestId);
 
     if (it.handler.getRequestStatusMap(RUNNING).containsKey(requestId)) {
@@ -218,40 +239,16 @@ enum CoreAdminOperation implements CoreAdminOp {
     }
   }),
   INVOKE_OP(INVOKE, new InvokeOp()),
-  FORCEPREPAREFORLEADERSHIP_OP(FORCEPREPAREFORLEADERSHIP, it -> {
-    final SolrParams params = it.req.getParams();
-
-    log().info("I have been forcefully prepare myself for leadership.");
-    ZkController zkController = it.handler.coreContainer.getZkController();
-    if (zkController == null) {
-      throw new SolrException(ErrorCode.BAD_REQUEST, "Only valid for SolrCloud");
-    }
-
-    String cname = params.get(CoreAdminParams.CORE);
-    if (cname == null) {
-      throw new IllegalArgumentException(CoreAdminParams.CORE + " is required");
-    }
-    try (SolrCore core = it.handler.coreContainer.getCore(cname)) {
-
-      // Setting the last published state for this core to be ACTIVE
-      if (core != null) {
-        core.getCoreDescriptor().getCloudDescriptor().setLastPublished(Replica.State.ACTIVE);
-        log().info("Setting the last published state for this core, {}, to {}", core.getName(), Replica.State.ACTIVE);
-      } else {
-        SolrException.log(log(), "Could not find core: " + cname);
-      }
-    }
-  }),
-
   BACKUPCORE_OP(BACKUPCORE, new BackupCoreOp()),
   RESTORECORE_OP(RESTORECORE, new RestoreCoreOp()),
   CREATESNAPSHOT_OP(CREATESNAPSHOT, new CreateSnapshotOp()),
   DELETESNAPSHOT_OP(DELETESNAPSHOT, new DeleteSnapshotOp()),
   LISTSNAPSHOTS_OP(LISTSNAPSHOTS, it -> {
-    CoreContainer cc = it.handler.getCoreContainer();
     final SolrParams params = it.req.getParams();
-
     String cname = params.required().get(CoreAdminParams.CORE);
+
+    CoreContainer cc = it.handler.getCoreContainer();
+
     try ( SolrCore core = cc.getCore(cname) ) {
       if (core == null) {
         throw new SolrException(ErrorCode.BAD_REQUEST, "Unable to locate core " + cname);
@@ -300,45 +297,57 @@ enum CoreAdminOperation implements CoreAdminOp {
   static NamedList<Object> getCoreStatus(CoreContainer cores, String cname, boolean isIndexInfoNeeded) throws IOException {
     NamedList<Object> info = new SimpleOrderedMap<>();
 
-    if (!cores.isLoaded(cname)) { // Lazily-loaded core, fill in what we can.
-      // It would be a real mistake to load the cores just to get the status
-      CoreDescriptor desc = cores.getUnloadedCoreDescriptor(cname);
-      if (desc != null) {
-        info.add(NAME, desc.getName());
-        info.add("instanceDir", desc.getInstanceDir());
-        // None of the following are guaranteed to be present in a not-yet-loaded core.
-        String tmp = desc.getDataDir();
-        if (StringUtils.isNotBlank(tmp)) info.add("dataDir", tmp);
-        tmp = desc.getConfigName();
-        if (StringUtils.isNotBlank(tmp)) info.add("config", tmp);
-        tmp = desc.getSchemaName();
-        if (StringUtils.isNotBlank(tmp)) info.add("schema", tmp);
-        info.add("isLoaded", "false");
-      }
+    if (cores.isCoreLoading(cname)) {
+      info.add(NAME, cname);
+      info.add("isLoaded", "false");
+      info.add("isLoading", "true");
     } else {
-      try (SolrCore core = cores.getCore(cname)) {
-        if (core != null) {
-          info.add(NAME, core.getName());
-          info.add("instanceDir", core.getResourceLoader().getInstancePath().toString());
-          info.add("dataDir", normalizePath(core.getDataDir()));
-          info.add("config", core.getConfigResource());
-          info.add("schema", core.getSchemaResource());
-          info.add("startTime", core.getStartTimeStamp());
-          info.add("uptime", core.getUptimeMs());
-          if (cores.isZooKeeperAware()) {
-            info.add("lastPublished", core.getCoreDescriptor().getCloudDescriptor().getLastPublished().toString().toLowerCase(Locale.ROOT));
-            info.add("configVersion", core.getSolrConfig().getZnodeVersion());
-          }
-          if (isIndexInfoNeeded) {
-            RefCounted<SolrIndexSearcher> searcher = core.getSearcher();
-            try {
-              SimpleOrderedMap<Object> indexInfo = LukeRequestHandler.getIndexInfo(searcher.get().getIndexReader());
-              long size = getIndexSize(core);
-              indexInfo.add("sizeInBytes", size);
-              indexInfo.add("size", NumberUtils.readableSize(size));
-              info.add("index", indexInfo);
-            } finally {
-              searcher.decref();
+      if (!cores.isLoaded(cname)) { // Lazily-loaded core, fill in what we can.
+        // It would be a real mistake to load the cores just to get the status
+        CoreDescriptor desc = cores.getUnloadedCoreDescriptor(cname);
+        if (desc != null) {
+          info.add(NAME, desc.getName());
+          info.add("instanceDir", desc.getInstanceDir());
+          // None of the following are guaranteed to be present in a not-yet-loaded core.
+          String tmp = desc.getDataDir();
+          if (StringUtils.isNotBlank(tmp)) info.add("dataDir", tmp);
+          tmp = desc.getConfigName();
+          if (StringUtils.isNotBlank(tmp)) info.add("config", tmp);
+          tmp = desc.getSchemaName();
+          if (StringUtils.isNotBlank(tmp)) info.add("schema", tmp);
+          info.add("isLoaded", "false");
+        }
+      } else {
+        try (SolrCore core = cores.getCore(cname)) {
+          if (core != null) {
+            info.add(NAME, core.getName());
+            info.add("instanceDir", core.getInstancePath().toString());
+            info.add("dataDir", normalizePath(core.getDataDir()));
+            info.add("config", core.getConfigResource());
+            info.add("schema", core.getSchemaResource());
+            info.add("startTime", core.getStartTimeStamp());
+            info.add("uptime", core.getUptimeMs());
+            if (cores.isZooKeeperAware()) {
+              info.add("lastPublished", core.getCoreDescriptor().getCloudDescriptor().getLastPublished().toString().toLowerCase(Locale.ROOT));
+              info.add("configVersion", core.getSolrConfig().getZnodeVersion());
+              SimpleOrderedMap cloudInfo = new SimpleOrderedMap<>();
+              cloudInfo.add(COLLECTION, core.getCoreDescriptor().getCloudDescriptor().getCollectionName());
+              cloudInfo.add(SHARD, core.getCoreDescriptor().getCloudDescriptor().getShardId());
+              cloudInfo.add(REPLICA, core.getCoreDescriptor().getCloudDescriptor().getCoreNodeName());
+              cloudInfo.add(REPLICA_TYPE, core.getCoreDescriptor().getCloudDescriptor().getReplicaType().name());
+              info.add("cloud", cloudInfo);
+            }
+            if (isIndexInfoNeeded) {
+              RefCounted<SolrIndexSearcher> searcher = core.getSearcher();
+              try {
+                SimpleOrderedMap<Object> indexInfo = LukeRequestHandler.getIndexInfo(searcher.get().getIndexReader());
+                long size = core.getIndexSize();
+                indexInfo.add("sizeInBytes", size);
+                indexInfo.add("size", NumberUtils.readableSize(size));
+                info.add("index", indexInfo);
+              } finally {
+                searcher.decref();
+              }
             }
           }
         }
@@ -347,27 +356,15 @@ enum CoreAdminOperation implements CoreAdminOp {
     return info;
   }
 
-  static long getIndexSize(SolrCore core) {
-    Directory dir;
-    long size = 0;
-    try {
-
-      dir = core.getDirectoryFactory().get(core.getIndexDir(), DirectoryFactory.DirContext.DEFAULT, core.getSolrConfig().indexConfig.lockType);
-
-      try {
-        size = core.getDirectoryFactory().size(dir);
-      } finally {
-        core.getDirectoryFactory().release(dir);
-      }
-    } catch (IOException e) {
-      SolrException.log(log, "IO error while trying to get the size of the Directory", e);
-    }
-    return size;
-  }
-
   @Override
   public void execute(CallInfo it) throws Exception {
-    fun.execute(it);
+    try {
+      fun.execute(it);
+    } catch (SolrException | InterruptedException e) {
+      // No need to re-wrap; throw as-is.
+      throw e;
+    } catch (Exception e) {
+      throw new SolrException(ErrorCode.SERVER_ERROR, "Error handling '" + action.name() + "' action", e);
+    }
   }
-
 }

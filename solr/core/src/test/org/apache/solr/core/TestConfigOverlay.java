@@ -19,11 +19,11 @@ package org.apache.solr.core;
 import java.util.Collections;
 import java.util.Map;
 
-import org.apache.lucene.util.LuceneTestCase;
+import org.apache.solr.SolrTestCase;
 
 import static org.apache.solr.core.ConfigOverlay.isEditableProp;
 
-public class TestConfigOverlay extends LuceneTestCase {
+public class TestConfigOverlay extends SolrTestCase {
 
   public void testPaths() {
     assertTrue(isEditableProp("updateHandler/autoCommit/maxDocs", true, null));
@@ -53,6 +53,7 @@ public class TestConfigOverlay extends LuceneTestCase {
     assertTrue(isEditableProp("requestDispatcher.requestParsers.multipartUploadLimitInKB", false, null));
     assertTrue(isEditableProp("requestDispatcher.requestParsers.formdataUploadLimitInKB", false, null));
     assertTrue(isEditableProp("requestDispatcher.requestParsers.enableRemoteStreaming", false, null));
+    assertTrue(isEditableProp("requestDispatcher.requestParsers.enableStreamBody", false, null));
     assertTrue(isEditableProp("requestDispatcher.requestParsers.addHttpRequestToContext", false, null));
 
     assertTrue(isEditableProp("requestDispatcher.handleSelect", false, null));

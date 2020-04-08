@@ -30,7 +30,7 @@ import java.util.Map;
 
 /** Enumerator that reads from a Solr collection. */
 class SolrEnumerator implements Enumerator<Object> {
-  private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   private final TupleStream tupleStream;
   private final List<Map.Entry<String, Class>> fields;
@@ -43,6 +43,7 @@ class SolrEnumerator implements Enumerator<Object> {
    * @param fields Fields to get from each Tuple
    */
   SolrEnumerator(TupleStream tupleStream, List<Map.Entry<String, Class>> fields) {
+
     this.tupleStream = tupleStream;
     try {
       this.tupleStream.open();
@@ -103,10 +104,10 @@ class SolrEnumerator implements Enumerator<Object> {
   private Object getRealVal(Object val) {
     // Check if Double is really a Long
     if(val instanceof Double) {
-      Double doubleVal = (double) val;
+      double doubleVal = (double) val;
       //make sure that double has no decimals and fits within Long
       if(doubleVal % 1 == 0 && doubleVal >= Long.MIN_VALUE && doubleVal <= Long.MAX_VALUE) {
-        return doubleVal.longValue();
+        return (long)doubleVal;
       }
       return doubleVal;
     }
@@ -125,7 +126,7 @@ class SolrEnumerator implements Enumerator<Object> {
         return true;
       }
     } catch (IOException e) {
-      logger.error("IOException", e);
+      log.error("IOException", e);
       return false;
     }
   }

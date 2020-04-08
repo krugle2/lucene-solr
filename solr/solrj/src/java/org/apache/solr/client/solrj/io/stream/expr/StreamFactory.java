@@ -21,11 +21,13 @@ import java.io.Serializable;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.apache.solr.client.solrj.io.comp.ComparatorOrder;
@@ -44,8 +46,9 @@ import org.apache.solr.client.solrj.io.stream.metrics.Metric;
 public class StreamFactory implements Serializable {
   
   private transient HashMap<String,String> collectionZkHosts;
-  private transient HashMap<String,Class<? extends Expressible>> functionNames;
+  private transient HashMap<String,Supplier<Class<? extends Expressible>>> functionNames;
   private transient String defaultZkHost;
+  private transient String defaultCollection;
   
   public StreamFactory(){
     collectionZkHosts = new HashMap<>();
@@ -54,7 +57,12 @@ public class StreamFactory implements Serializable {
   
   public StreamFactory withCollectionZkHost(String collectionName, String zkHost){
     this.collectionZkHosts.put(collectionName, zkHost);
+    this.defaultCollection = collectionName;
     return this;
+  }
+
+  public String getDefaultCollection() {
+    return defaultCollection;
   }
 
   public StreamFactory withDefaultZkHost(String zkHost) {
@@ -73,14 +81,20 @@ public class StreamFactory implements Serializable {
     return null;
   }
   
-  public Map<String,Class<? extends Expressible>> getFunctionNames(){
-    return functionNames;
+  public Map<String, Supplier<Class<? extends Expressible>>> getFunctionNames() {
+    return Collections.unmodifiableMap(functionNames);
   }
   public StreamFactory withFunctionName(String functionName, Class<? extends Expressible> clazz){
+    this.functionNames.put(functionName, () -> clazz);
+    return this;
+  }
+
+   public StreamFactory withFunctionName(String functionName, Supplier< Class<? extends Expressible>> clazz){
     this.functionNames.put(functionName, clazz);
     return this;
   }
-  
+
+
   public StreamExpressionParameter getOperand(StreamExpression expression, int parameterIndex){
     if(null == expression.getParameters() || parameterIndex >= expression.getParameters().size()){
       return null;
@@ -90,7 +104,7 @@ public class StreamFactory implements Serializable {
   }
   
   public List<String> getValueOperands(StreamExpression expression){
-    return getOperandsOfType(expression, StreamExpressionValue.class).stream().map(item -> ((StreamExpressionValue)item).getValue()).collect(Collectors.toList());
+    return getOperandsOfType(expression, StreamExpressionValue.class).stream().map(item -> ((StreamExpressionValue) item).getValue()).collect(Collectors.toList());
   }
   
   /** Given an expression, will return the value parameter at the given index, or null if doesn't exist */
@@ -167,14 +181,15 @@ public class StreamFactory implements Serializable {
     List<StreamExpression> allStreamExpressions = getExpressionOperands(expression);
     
     parameterLoop:
-    for(StreamExpression streamExpression : allStreamExpressions){
-      if(functionNames.containsKey(streamExpression.getFunctionName())){
-        for(Class clazz : clazzes){
-          if(!clazz.isAssignableFrom(functionNames.get(streamExpression.getFunctionName()))){
+    for(StreamExpression streamExpression : allStreamExpressions) {
+      Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(streamExpression.getFunctionName());
+      if (classSupplier != null) {
+        for (Class clazz : clazzes) {
+          if (!clazz.isAssignableFrom(classSupplier.get())) {
             continue parameterLoop;
           }
         }
-        
+
         matchingStreamExpressions.add(streamExpression);
       }
     }
@@ -183,9 +198,10 @@ public class StreamFactory implements Serializable {
   }
   
   public boolean doesRepresentTypes(StreamExpression expression, Class ... clazzes){
-    if(functionNames.containsKey(expression.getFunctionName())){
+    Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(expression.getFunctionName());
+    if(classSupplier != null){
       for(Class clazz : clazzes){
-        if(!clazz.isAssignableFrom(functionNames.get(expression.getFunctionName()))){
+        if(!clazz.isAssignableFrom(classSupplier.get())){
           return false;
         }
       }
@@ -197,7 +213,7 @@ public class StreamFactory implements Serializable {
   
   public int getIntOperand(StreamExpression expression, String paramName, Integer defaultValue) throws IOException{
     StreamExpressionNamedParameter param = getNamedOperand(expression, paramName);
-    
+
     if(null == param || null == param.getParameter() || !(param.getParameter() instanceof StreamExpressionValue)){
       if(null != defaultValue){
         return defaultValue;
@@ -235,10 +251,12 @@ public class StreamFactory implements Serializable {
   }
   public TupleStream constructStream(StreamExpression expression) throws IOException{
     String function = expression.getFunctionName();
-    if(functionNames.containsKey(function)){
-      Class<? extends Expressible> clazz = functionNames.get(function);
+    Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(function);
+
+    if(classSupplier != null){
+      Class<? extends Expressible> clazz =  classSupplier.get();
       if(Expressible.class.isAssignableFrom(clazz) && TupleStream.class.isAssignableFrom(clazz)){
-        return (TupleStream)createInstance(functionNames.get(function), new Class[]{ StreamExpression.class, StreamFactory.class }, new Object[]{ expression, this});
+        return (TupleStream)createInstance(clazz, new Class[]{ StreamExpression.class, StreamFactory.class }, new Object[]{ expression, this});
       }
     }
     
@@ -250,10 +268,11 @@ public class StreamFactory implements Serializable {
   }
   public Metric constructMetric(StreamExpression expression) throws IOException{
     String function = expression.getFunctionName();
-    if(functionNames.containsKey(function)){
-      Class<? extends Expressible> clazz = functionNames.get(function);
+    Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(function);
+    if(classSupplier != null){
+      Class<? extends Expressible> clazz = classSupplier.get();
       if(Expressible.class.isAssignableFrom(clazz) && Metric.class.isAssignableFrom(clazz)){
-        return (Metric)createInstance(functionNames.get(function), new Class[]{ StreamExpression.class, StreamFactory.class }, new Object[]{ expression, this});
+        return (Metric)createInstance(clazz, new Class[]{ StreamExpression.class, StreamFactory.class }, new Object[]{ expression, this});
       }
     }
     
@@ -350,69 +369,97 @@ public class StreamFactory implements Serializable {
   public Metric constructOperation(String expressionClause) throws IOException {
     return constructMetric(StreamExpressionParser.parse(expressionClause));
   }
-  public StreamOperation constructOperation(StreamExpression expression) throws IOException{
+
+  public StreamOperation constructOperation(StreamExpression expression) throws IOException {
     String function = expression.getFunctionName();
-    if(functionNames.containsKey(function)){
-      Class<? extends Expressible> clazz = functionNames.get(function);
-      if(Expressible.class.isAssignableFrom(clazz) && StreamOperation.class.isAssignableFrom(clazz)){
-        return (StreamOperation)createInstance(functionNames.get(function), new Class[]{ StreamExpression.class, StreamFactory.class }, new Object[]{ expression, this});
+    Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(function);
+    if (classSupplier != null) {
+      Class<? extends Expressible> clazz = classSupplier.get();
+      if (Expressible.class.isAssignableFrom(clazz) && StreamOperation.class.isAssignableFrom(clazz)) {
+        return (StreamOperation) createInstance(clazz, new Class[]{StreamExpression.class, StreamFactory.class}, new Object[]{expression, this});
       }
     }
-    
-    throw new IOException(String.format(Locale.ROOT,"Invalid operation expression %s - function '%s' is unknown (not mapped to a valid StreamOperation)", expression, expression.getFunctionName()));
-  }
 
-  public StreamEvaluator constructEvaluator(String expressionClause) throws IOException {
+    throw new IOException(String.format(Locale.ROOT, "Invalid operation expression %s - function '%s' is unknown (not mapped to a valid StreamOperation)", expression, expression.getFunctionName()));
+  }
+  
+  public org.apache.solr.client.solrj.io.eval.StreamEvaluator constructEvaluator(String expressionClause) throws IOException {
     return constructEvaluator(StreamExpressionParser.parse(expressionClause));
   }
-  public StreamEvaluator constructEvaluator(StreamExpression expression) throws IOException{
+  public org.apache.solr.client.solrj.io.eval.StreamEvaluator constructEvaluator(StreamExpression expression) throws IOException{
     String function = expression.getFunctionName();
-    if(functionNames.containsKey(function)){
-      Class<? extends Expressible> clazz = functionNames.get(function);
+    Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(function);
+
+    if(classSupplier != null){
+      Class<? extends Expressible> clazz = classSupplier.get();
       if(Expressible.class.isAssignableFrom(clazz) && StreamEvaluator.class.isAssignableFrom(clazz)){
-        return (StreamEvaluator)createInstance(functionNames.get(function), new Class[]{ StreamExpression.class, StreamFactory.class }, new Object[]{ expression, this});
+        return (org.apache.solr.client.solrj.io.eval.StreamEvaluator)createInstance(clazz, new Class[]{ StreamExpression.class, StreamFactory.class }, new Object[]{ expression, this});
       }
     }
     
     throw new IOException(String.format(Locale.ROOT,"Invalid evaluator expression %s - function '%s' is unknown (not mapped to a valid StreamEvaluator)", expression, expression.getFunctionName()));
   }
 
+  public boolean isStream(StreamExpression expression) throws IOException {
+    String function = expression.getFunctionName();
+    Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(function);
+    if (classSupplier != null) {
+      Class<? extends Expressible> clazz = classSupplier.get();
+      if (Expressible.class.isAssignableFrom(clazz) && TupleStream.class.isAssignableFrom(clazz)) {
+        return true;
+      }
+    }
 
-  public <T> T createInstance(Class<T> clazz, Class<?>[] paramTypes, Object[] params) throws IOException{
+    return false;
+  }
+
+  public boolean isEvaluator(StreamExpression expression) throws IOException {
+    String function = expression.getFunctionName();
+    Supplier<Class<? extends Expressible>> classSupplier = functionNames.get(function);
+    if (classSupplier != null) {
+      Class<? extends Expressible> clazz = classSupplier.get();
+      if (Expressible.class.isAssignableFrom(clazz) && StreamEvaluator.class.isAssignableFrom(clazz)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  public <T> T createInstance(Class<T> clazz, Class<?>[] paramTypes, Object[] params) throws IOException {
     Constructor<T> ctor;
     try {
       ctor = clazz.getConstructor(paramTypes);
       return ctor.newInstance(params);
-      
+
     } catch (NoSuchMethodException | SecurityException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
-      if(null != e.getMessage()){
-        throw new IOException(String.format(Locale.ROOT,"Unable to construct instance of %s caused by %s", clazz.getName(), e.getMessage()),e);
-      }
-      else{
-        throw new IOException(String.format(Locale.ROOT,"Unable to construct instance of %s", clazz.getName()),e);
+      if (null != e.getMessage()) {
+        throw new IOException(String.format(Locale.ROOT, "Unable to construct instance of %s caused by %s", clazz.getName(), e.getMessage()), e);
+      } else {
+        throw new IOException(String.format(Locale.ROOT, "Unable to construct instance of %s", clazz.getName()), e);
       }
     }
   }
-  
-  public String getFunctionName(Class<? extends Expressible> clazz) throws IOException{
-    for(Entry<String,Class<? extends Expressible>> entry : functionNames.entrySet()){
-      if(entry.getValue() == clazz){
+
+  public String getFunctionName(Class<? extends Expressible> clazz) throws IOException {
+    for (Entry<String, Supplier<Class<? extends Expressible>>> entry : functionNames.entrySet()) {
+      if (entry.getValue().get() == clazz) {
         return entry.getKey();
       }
     }
-    
+
+
     throw new IOException(String.format(Locale.ROOT, "Unable to find function name for class '%s'", clazz.getName()));
   }
-  
+
   public Object constructPrimitiveObject(String original){
     String lower = original.trim().toLowerCase(Locale.ROOT);
-    
+
     if("null".equals(lower)){ return null; }
     if("true".equals(lower) || "false".equals(lower)){ return Boolean.parseBoolean(lower); }
     try{ return Long.valueOf(original); } catch(Exception ignored){};
-    try{ if (original.matches(".{1,8}")){ return Float.valueOf(original); }} catch(Exception ignored){};
-    try{ if (original.matches(".{1,17}")){ return Double.valueOf(original); }} catch(Exception ignored){};
-    
+    try{ return Double.valueOf(original); } catch(Exception ignored){};
+
     // is a string
     return original;
   }

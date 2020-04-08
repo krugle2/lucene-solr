@@ -84,9 +84,17 @@ public class TestSolrCloudSnapshots extends SolrCloudTestCase {
     String collectionName = "SolrCloudSnapshots";
     CollectionAdminRequest.Create create = CollectionAdminRequest.createCollection(collectionName, "conf1", NUM_SHARDS, NUM_REPLICAS);
     create.process(solrClient);
+    cluster.waitForActiveCollection(collectionName, NUM_SHARDS, NUM_SHARDS * NUM_REPLICAS);
 
     int nDocs = BackupRestoreUtils.indexDocs(cluster.getSolrClient(), collectionName, docsSeed);
     BackupRestoreUtils.verifyDocs(nDocs, solrClient, collectionName);
+
+    // Set a collection property
+    final boolean collectionPropertySet = usually();
+    if (collectionPropertySet) {
+      CollectionAdminRequest.CollectionProp setProperty = CollectionAdminRequest.setCollectionProperty(collectionName, "test.property", "test.value");
+      setProperty.process(solrClient);
+    }
 
     String commitName = TestUtil.randomSimpleString(random(), 1, 5);
 
@@ -178,6 +186,11 @@ public class TestSolrCloudSnapshots extends SolrCloudTestCase {
     {
       CollectionAdminRequest.Restore restore = CollectionAdminRequest.restoreCollection(restoreCollectionName, backupName)
           .setLocation(backupLocation);
+      if (replicaFailures) {
+        // In this case one of the Solr servers would be down. Hence we need to increase
+        // max_shards_per_node property for restore command to succeed.
+        restore.setMaxShardsPerNode(2);
+      }
       if (random().nextBoolean()) {
         assertEquals(0, restore.process(solrClient).getStatus());
       } else {
@@ -186,6 +199,14 @@ public class TestSolrCloudSnapshots extends SolrCloudTestCase {
       AbstractDistribZkTestBase.waitForRecoveriesToFinish(
           restoreCollectionName, cluster.getSolrClient().getZkStateReader(), log.isDebugEnabled(), true, 30);
       BackupRestoreUtils.verifyDocs(nDocs, solrClient, restoreCollectionName);
+    }
+
+    // Check collection property
+    Map<String, String> collectionProperties = solrClient.getZkStateReader().getCollectionProperties(restoreCollectionName);
+    if (collectionPropertySet) {
+      assertEquals("Snapshot restore hasn't restored collection properties", "test.value", collectionProperties.get("test.property"));
+    } else {
+      assertNull("Collection property shouldn't be present", collectionProperties.get("test.property"));
     }
 
     // Verify if the snapshot deletion works correctly when one or more replicas containing the snapshot are
@@ -295,7 +316,7 @@ public class TestSolrCloudSnapshots extends SolrCloudTestCase {
     for(int i = 0 ; i < apiResult.size(); i++) {
       String commitName = apiResult.getName(i);
       String indexDirPath = (String)((NamedList)apiResult.get(commitName)).get(SolrSnapshotManager.INDEX_DIR_PATH);
-      long genNumber = Long.valueOf((String)((NamedList)apiResult.get(commitName)).get(SolrSnapshotManager.GENERATION_NUM));
+      long genNumber = Long.parseLong((String)((NamedList)apiResult.get(commitName)).get(SolrSnapshotManager.GENERATION_NUM));
       result.add(new SnapshotMetaData(commitName, indexDirPath, genNumber));
     }
     return result;

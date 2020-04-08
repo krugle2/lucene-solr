@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.FieldsProducer;
@@ -94,16 +95,17 @@ public abstract class CodecReader extends LeafReader implements Accountable {
   }
   
   private void checkBounds(int docID) {
-    if (docID < 0 || docID >= maxDoc()) {       
-      throw new IndexOutOfBoundsException("docID must be >= 0 and < maxDoc=" + maxDoc() + " (got docID=" + docID + ")");
-    }
+    Objects.checkIndex(docID, maxDoc());
   }
-  
+
   @Override
-  public final Fields fields() {
-    return getPostingsReader();
+  public final Terms terms(String field) throws IOException {
+    //ensureOpen(); no; getPostingsReader calls this
+    // We could check the FieldInfo IndexOptions but there's no point since
+    //   PostingsReader will simply return null for fields that don't exist or that have no terms index.
+    return getPostingsReader().terms(field);
   }
-  
+
   // returns the FieldInfo that corresponds to the given field and type, or
   // null if the field does not exist, or not indexed as the requested
   // DovDocValuesType.

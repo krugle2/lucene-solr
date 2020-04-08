@@ -76,15 +76,13 @@ public class TestBadConfig extends AbstractBadConfigTestBase {
   }
 
   public void testBogusMergePolicy() throws Exception {
-    assertConfigs("bad-mp-solrconfig.xml", "schema-minimal.xml",
-                  "DummyMergePolicy");
     assertConfigs("bad-mpf-solrconfig.xml", "schema-minimal.xml",
                   "DummyMergePolicyFactory");
   }
 
   public void testSchemaMutableButNotManaged() throws Exception {
     assertConfigs("bad-solrconfig-schema-mutable-but-not-managed.xml",
-                  "schema-minimal.xml", "Unexpected arg(s): {mutable=false,managedSchemaResourceName=schema.xml}");
+                  "schema-minimal.xml", "Unexpected arg(s): {mutable=false, managedSchemaResourceName=schema.xml}");
   }
 
   public void testManagedSchemaCannotBeNamedSchemaDotXml() throws Exception {

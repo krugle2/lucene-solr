@@ -17,6 +17,7 @@
 package org.apache.solr.search.grouping;
 
 import org.apache.lucene.search.Collector;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Sort;
 import java.io.IOException;
 import java.util.List;
@@ -40,6 +41,12 @@ public interface Command<T> {
   List<Collector> create() throws IOException;
 
   /**
+   * Run post-collection steps.
+   * @throws IOException If I/O related errors occur
+   */
+  default void postCollect(IndexSearcher searcher) throws IOException {}
+
+  /**
    * Returns the results that the collectors created
    * by {@link #create()} contain after a search has been executed.
    *
@@ -60,6 +67,6 @@ public interface Command<T> {
   /**
    * @return The sort inside a group
    */
-  Sort getSortWithinGroup();
+  Sort getWithinGroupSort();
 
 }

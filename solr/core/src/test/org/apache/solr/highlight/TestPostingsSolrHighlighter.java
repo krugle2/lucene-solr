@@ -99,15 +99,23 @@ public class TestPostingsSolrHighlighter extends SolrTestCaseJ4 {
         "//lst[@name='highlighting']/lst[@name='102']/arr[@name='text3']/str='crappier <em>document</em>'");
   }
   
+  // SOLR-5127
+  public void testMultipleFieldsViaWildcard() {
+    assertQ("highlighting text and text3*",
+        req("q", (random().nextBoolean() ? "text:document text3:document" : "text3:document text:document"),
+            "sort", "id asc", "hl", "true",
+            "hl.fl", (random().nextBoolean() ? "text,text3*" : "text3*,text")),
+        "count(//lst[@name='highlighting']/*)=2",
+        "//lst[@name='highlighting']/lst[@name='101']/arr[@name='text']/str='<em>document</em> one'",
+        "//lst[@name='highlighting']/lst[@name='101']/arr[@name='text3']/str='crappy <em>document</em>'",
+        "//lst[@name='highlighting']/lst[@name='102']/arr[@name='text']/str='second <em>document</em>'",
+        "//lst[@name='highlighting']/lst[@name='102']/arr[@name='text3']/str='crappier <em>document</em>'");
+  }
+
   public void testMisconfiguredField() {
     ignoreException("was indexed without offsets");
-    try {
-      assertQ("should fail, has no offsets",
-        req("q", "text2:document", "sort", "id asc", "hl", "true", "hl.fl", "text2"));
-      fail();
-    } catch (Exception expected) {
-      // expected
-    }
+    expectThrows(Exception.class, () ->
+        h.query(req("q", "text2:document", "sort", "id asc", "hl", "true", "hl.fl", "text2")));
     resetExceptionIgnores();
   }
   
@@ -163,7 +171,7 @@ public class TestPostingsSolrHighlighter extends SolrTestCaseJ4 {
     assertU(commit());
     assertQ("html escaped", 
         req("q", "text:document", "sort", "id asc", "hl", "true", "hl.encoder", "html"),
-        "//lst[@name='highlighting']/lst[@name='103']/arr[@name='text']/str='<em>Document</em>&#32;one&#32;has&#32;a&#32;first&#32;&lt;i&gt;sentence&lt;&#x2F;i&gt;&#46;'");
+        "//lst[@name='highlighting']/lst[@name='103']/arr[@name='text']/str='<em>Document</em> one has a first &lt;i&gt;sentence&lt;&#x2F;i&gt;.'");
   }
   
   public void testWildcard() {

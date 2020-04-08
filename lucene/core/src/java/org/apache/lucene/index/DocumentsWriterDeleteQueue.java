@@ -16,6 +16,7 @@
  */
 package org.apache.lucene.index;
 
+import java.io.Closeable;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -23,8 +24,9 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.apache.lucene.index.DocValuesUpdate.BinaryDocValuesUpdate;
 import org.apache.lucene.index.DocValuesUpdate.NumericDocValuesUpdate;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.util.Accountable;
-import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.InfoStream;
 
 /**
  * {@link DocumentsWriterDeleteQueue} is a non-blocking linked pending deletes
@@ -54,7 +56,7 @@ import org.apache.lucene.util.BytesRef;
  * <ol>
  * <li>consumes a document and finishes its processing</li>
  * <li>updates its private {@link DeleteSlice} either by calling
- * {@link #updateSlice(DeleteSlice)} or {@link #add(Term, DeleteSlice)} (if the
+ * {@link #updateSlice(DeleteSlice)} or {@link #add(Node, DeleteSlice)} (if the
  * document has a delTerm)</li>
  * <li>applies all deletes in the slice to its private {@link BufferedUpdates}
  * and resets it</li>
@@ -67,10 +69,12 @@ import org.apache.lucene.util.BytesRef;
  * will also not be added to its private deletes neither to the global deletes.
  * 
  */
-final class DocumentsWriterDeleteQueue implements Accountable {
+final class DocumentsWriterDeleteQueue implements Accountable, Closeable {
 
   // the current end (latest delete operation) in the delete queue:
   private volatile Node<?> tail;
+
+  private volatile boolean closed = false;
 
   /** Used to record deletes against all prior (already written to disk) segments.  Whenever any segment flushes, we bundle up this set of
    *  deletes and insert into the buffered updates stream before the newly flushed segment(s). */
@@ -85,19 +89,22 @@ final class DocumentsWriterDeleteQueue implements Accountable {
   /** Generates the sequence number that IW returns to callers changing the index, showing the effective serialization of all operations. */
   private final AtomicLong nextSeqNo;
 
+  private final InfoStream infoStream;
+
   // for asserts
   long maxSeqNo = Long.MAX_VALUE;
   
-  DocumentsWriterDeleteQueue() {
+  DocumentsWriterDeleteQueue(InfoStream infoStream) {
     // seqNo must start at 1 because some APIs negate this to also return a boolean
-    this(0, 1);
+    this(infoStream, 0, 1);
   }
   
-  DocumentsWriterDeleteQueue(long generation, long startSeqNo) {
-    this(new BufferedUpdates("global"), generation, startSeqNo);
+  DocumentsWriterDeleteQueue(InfoStream infoStream, long generation, long startSeqNo) {
+    this(infoStream, new BufferedUpdates("global"), generation, startSeqNo);
   }
 
-  DocumentsWriterDeleteQueue(BufferedUpdates globalBufferedUpdates, long generation, long startSeqNo) {
+  DocumentsWriterDeleteQueue(InfoStream infoStream, BufferedUpdates globalBufferedUpdates, long generation, long startSeqNo) {
+    this.infoStream = infoStream;
     this.globalBufferedUpdates = globalBufferedUpdates;
     this.generation = generation;
     this.nextSeqNo = new AtomicLong(startSeqNo);
@@ -126,13 +133,20 @@ final class DocumentsWriterDeleteQueue implements Accountable {
     tryApplyGlobalSlice();
     return seqNo;
   }
-  
+
+  static Node<Term> newNode(Term term) {
+    return new TermNode(term);
+  }
+
+  static Node<DocValuesUpdate[]> newNode(DocValuesUpdate... updates) {
+    return new DocValuesUpdatesNode(updates);
+  }
+
   /**
    * invariant for document update
    */
-  long add(Term term, DeleteSlice slice) {
-    final TermNode termNode = new TermNode(term);
-    long seqNo = add(termNode);
+  long add(Node<?> deleteNode, DeleteSlice slice) {
+    long seqNo = add(deleteNode);
     /*
      * this is an update request where the term is the updated documents
      * delTerm. in that case we need to guarantee that this insert is atomic
@@ -143,7 +157,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
      * will apply this delete next time we update our slice and one of the two
      * competing updates wins!
      */
-    slice.sliceTail = termNode;
+    slice.sliceTail = deleteNode;
     assert slice.sliceHead != slice.sliceTail : "slice head and tail must differ after add";
     tryApplyGlobalSlice(); // TODO doing this each time is not necessary maybe
     // we can do it just every n times or so?
@@ -152,6 +166,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
   }
 
   synchronized long add(Node<?> newNode) {
+    ensureOpen();
     tail.next = newNode;
     this.tail = newNode;
     return getNextSequenceNumber();
@@ -173,6 +188,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
 
   void tryApplyGlobalSlice() {
     if (globalBufferLock.tryLock()) {
+      ensureOpen();
       /*
        * The global buffer must be locked but we don't need to update them if
        * there is an update going on right now. It is sufficient to apply the
@@ -189,31 +205,65 @@ final class DocumentsWriterDeleteQueue implements Accountable {
     }
   }
 
+
   FrozenBufferedUpdates freezeGlobalBuffer(DeleteSlice callerSlice) {
     globalBufferLock.lock();
-    /*
-     * Here we freeze the global buffer so we need to lock it, apply all
-     * deletes in the queue and reset the global slice to let the GC prune the
-     * queue.
-     */
-    final Node<?> currentTail = tail; // take the current tail make this local any
-    // Changes after this call are applied later
-    // and not relevant here
-    if (callerSlice != null) {
-      // Update the callers slices so we are on the same page
-      callerSlice.sliceTail = currentTail;
-    }
     try {
-      if (globalSlice.sliceTail != currentTail) {
-        globalSlice.sliceTail = currentTail;
-        globalSlice.apply(globalBufferedUpdates, BufferedUpdates.MAX_INT);
+      ensureOpen();
+      /*
+       * Here we freeze the global buffer so we need to lock it, apply all
+       * deletes in the queue and reset the global slice to let the GC prune the
+       * queue.
+       */
+      final Node<?> currentTail = tail; // take the current tail make this local any
+      // Changes after this call are applied later
+      // and not relevant here
+      if (callerSlice != null) {
+        // Update the callers slices so we are on the same page
+        callerSlice.sliceTail = currentTail;
       }
-
-      final FrozenBufferedUpdates packet = new FrozenBufferedUpdates(globalBufferedUpdates, false);
-      globalBufferedUpdates.clear();
-      return packet;
+      return freezeGlobalBufferInternal(currentTail);
     } finally {
       globalBufferLock.unlock();
+    }
+  }
+
+  /**
+   * This may freeze the global buffer unless the delete queue has already been closed.
+   * If the queue has been closed this method will return <code>null</code>
+   */
+  FrozenBufferedUpdates maybeFreezeGlobalBuffer() {
+    globalBufferLock.lock();
+    try {
+      if (closed == false) {
+        /*
+         * Here we freeze the global buffer so we need to lock it, apply all
+         * deletes in the queue and reset the global slice to let the GC prune the
+         * queue.
+         */
+        return freezeGlobalBufferInternal(tail); // take the current tail make this local any
+      } else {
+        assert anyChanges() == false : "we are closed but have changes";
+        return null;
+      }
+    } finally {
+      globalBufferLock.unlock();
+    }
+  }
+
+  private FrozenBufferedUpdates freezeGlobalBufferInternal(final Node<?> currentTail ) {
+    assert globalBufferLock.isHeldByCurrentThread();
+    if (globalSlice.sliceTail != currentTail) {
+      globalSlice.sliceTail = currentTail;
+      globalSlice.apply(globalBufferedUpdates, BufferedUpdates.MAX_INT);
+    }
+
+    if (globalBufferedUpdates.any()) {
+      final FrozenBufferedUpdates packet = new FrozenBufferedUpdates(infoStream, globalBufferedUpdates, null);
+      globalBufferedUpdates.clear();
+      return packet;
+    } else {
+      return null;
     }
   }
 
@@ -223,6 +273,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
 
   /** Negative result means there were new deletes since we last applied */
   synchronized long updateSlice(DeleteSlice slice) {
+    ensureOpen();
     long seqNo = getNextSequenceNumber();
     if (slice.sliceTail != tail) {
       // new deletes arrived since we last checked
@@ -240,6 +291,29 @@ final class DocumentsWriterDeleteQueue implements Accountable {
       return true;
     }
     return false;
+  }
+
+  private void ensureOpen() {
+    if (closed) {
+      throw new AlreadyClosedException("This " + DocumentsWriterDeleteQueue.class.getSimpleName() + " is already closed");
+    }
+  }
+
+  public boolean isOpen() {
+    return closed == false;
+  }
+
+  @Override
+  public synchronized void close() {
+    globalBufferLock.lock();
+    try {
+      if (anyChanges()) {
+        throw new IllegalStateException("Can't close queue unless all changes are applied");
+      }
+      this.closed = true;
+    } finally {
+      globalBufferLock.unlock();
+    }
   }
 
   static class DeleteSlice {
@@ -283,11 +357,19 @@ final class DocumentsWriterDeleteQueue implements Accountable {
     }
 
     /**
+     * Returns <code>true</code> iff the given node is identical to the the slices tail,
+     * otherwise <code>false</code>.
+     */
+    boolean isTail(Node<?> node) {
+      return sliceTail == node;
+    }
+
+    /**
      * Returns <code>true</code> iff the given item is identical to the item
      * hold by the slices tail, otherwise <code>false</code>.
      */
-    boolean isTailItem(Object item) {
-      return sliceTail.item == item;
+    boolean isTailItem(Object object) {
+      return sliceTail.item == object;
     }
 
     boolean isEmpty() {
@@ -310,7 +392,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
     }
   }
 
-  private static class Node<T> {
+  static class Node<T> {
     volatile Node<?> next;
     final T item;
 
@@ -320,6 +402,10 @@ final class DocumentsWriterDeleteQueue implements Accountable {
 
     void apply(BufferedUpdates bufferedDeletes, int docIDUpto) {
       throw new IllegalStateException("sentinel item must never be applied");
+    }
+
+    boolean isDelete() {
+      return true;
     }
   }
 
@@ -338,6 +424,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
     public String toString() {
       return "del=" + item;
     }
+
   }
 
   private static final class QueryArrayNode extends Node<Query[]> {
@@ -369,6 +456,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
     public String toString() {
       return "dels=" + Arrays.toString(item);
     }
+
   }
 
   private static final class DocValuesUpdatesNode extends Node<DocValuesUpdate[]> {
@@ -382,15 +470,21 @@ final class DocumentsWriterDeleteQueue implements Accountable {
       for (DocValuesUpdate update : item) {
         switch (update.type) {
           case NUMERIC:
-            bufferedUpdates.addNumericUpdate(new NumericDocValuesUpdate(update.term, update.field, (Long) update.value), docIDUpto);
+            bufferedUpdates.addNumericUpdate((NumericDocValuesUpdate) update, docIDUpto);
             break;
           case BINARY:
-            bufferedUpdates.addBinaryUpdate(new BinaryDocValuesUpdate(update.term, update.field, (BytesRef) update.value), docIDUpto);
+            bufferedUpdates.addBinaryUpdate((BinaryDocValuesUpdate) update, docIDUpto);
             break;
           default:
             throw new IllegalArgumentException(update.type + " DocValues updates not supported yet!");
         }
       }
+    }
+
+
+    @Override
+    boolean isDelete() {
+      return false;
     }
 
     @Override
@@ -400,7 +494,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
       if (item.length > 0) {
         sb.append("term=").append(item[0].term).append("; updates: [");
         for (DocValuesUpdate update : item) {
-          sb.append(update.field).append(':').append(update.value).append(',');
+          sb.append(update.field).append(':').append(update.valueToString()).append(',');
         }
         sb.setCharAt(sb.length()-1, ']');
       }
@@ -426,7 +520,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
     globalBufferLock.lock();
     try {
       forceApplyGlobalSlice();
-      return globalBufferedUpdates.terms.size();
+      return globalBufferedUpdates.deleteTerms.size();
     } finally {
       globalBufferLock.unlock();
     }
@@ -434,7 +528,7 @@ final class DocumentsWriterDeleteQueue implements Accountable {
 
   @Override
   public long ramBytesUsed() {
-    return globalBufferedUpdates.bytesUsed.get();
+    return globalBufferedUpdates.ramBytesUsed();
   }
 
   @Override

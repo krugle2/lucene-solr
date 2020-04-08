@@ -33,7 +33,6 @@ import org.apache.lucene.util.IOUtils;
 
 import com.ibm.icu.lang.UCharacter;
 import com.ibm.icu.lang.UProperty;
-import com.ibm.icu.lang.UScript;
 import com.ibm.icu.text.BreakIterator;
 import com.ibm.icu.text.RuleBasedBreakIterator;
 
@@ -60,7 +59,7 @@ import com.ibm.icu.text.RuleBasedBreakIterator;
  *
  * <p>
  * To add per-script rules, add a "rulefiles" argument, which should contain a
- * comma-separated list of <tt>code:rulefile</tt> pairs in the following format:
+ * comma-separated list of <code>code:rulefile</code> pairs in the following format:
  * <a href="http://unicode.org/iso15924/iso15924-codes.html"
  * >four-letter ISO 15924 script code</a>, followed by a colon, then a resource
  * path.  E.g. to specify rules for Latin (script code "Latn") and Cyrillic
@@ -73,8 +72,15 @@ import com.ibm.icu.text.RuleBasedBreakIterator;
  *                rulefiles="Latn:my.Latin.rules.rbbi,Cyrl:my.Cyrillic.rules.rbbi"/&gt;
  *   &lt;/analyzer&gt;
  * &lt;/fieldType&gt;</pre>
+ *
+ * @since 3.1
+ * @lucene.spi {@value #NAME}
  */
 public class ICUTokenizerFactory extends TokenizerFactory implements ResourceLoaderAware {
+
+  /** SPI name */
+  public static final String NAME = "icu";
+
   static final String RULEFILES = "rulefiles";
   private final Map<Integer,String> tailored;
   private ICUTokenizerConfig config;
@@ -102,13 +108,18 @@ public class ICUTokenizerFactory extends TokenizerFactory implements ResourceLoa
     }
   }
 
+  /** Default ctor for compatibility with SPI */
+  public ICUTokenizerFactory() {
+    throw defaultCtorException();
+  }
+
   @Override
   public void inform(ResourceLoader loader) throws IOException {
     assert tailored != null : "init must be called first!";
     if (tailored.isEmpty()) {
       config = new DefaultICUTokenizerConfig(cjkAsWords, myanmarAsWords);
     } else {
-      final BreakIterator breakers[] = new BreakIterator[UScript.CODE_LIMIT];
+      final BreakIterator breakers[] = new BreakIterator[1 + UCharacter.getIntPropertyMaxValue(UProperty.SCRIPT)];
       for (Map.Entry<Integer,String> entry : tailored.entrySet()) {
         int code = entry.getKey();
         String resourcePath = entry.getValue();
@@ -117,9 +128,9 @@ public class ICUTokenizerFactory extends TokenizerFactory implements ResourceLoa
       config = new DefaultICUTokenizerConfig(cjkAsWords, myanmarAsWords) {
         
         @Override
-        public BreakIterator getBreakIterator(int script) {
+        public RuleBasedBreakIterator getBreakIterator(int script) {
           if (breakers[script] != null) {
-            return (BreakIterator) breakers[script].clone();
+            return (RuleBasedBreakIterator) breakers[script].clone();
           } else {
             return super.getBreakIterator(script);
           }

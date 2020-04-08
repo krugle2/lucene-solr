@@ -29,7 +29,8 @@ import java.util.Optional;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.IndexNotFoundException;
-import org.apache.lucene.store.SimpleFSDirectory;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.util.LuceneTestCase.Slow;
 import org.apache.lucene.util.TestUtil;
 import org.apache.solr.SolrTestCaseJ4;
@@ -69,7 +70,6 @@ public class TestSolrCoreSnapshots extends SolrCloudTestCase {
     configureCluster(1)// nodes
         .addConfig("conf1", TEST_PATH().resolve("configsets").resolve("cloud-minimal").resolve("conf"))
         .configure();
-
     docsSeed = random().nextLong();
   }
 
@@ -293,14 +293,14 @@ public class TestSolrCoreSnapshots extends SolrCloudTestCase {
     for(int i = 0 ; i < apiResult.size(); i++) {
       String commitName = apiResult.getName(i);
       String indexDirPath = (String)((NamedList)apiResult.get(commitName)).get("indexDirPath");
-      long genNumber = Long.valueOf((String)((NamedList)apiResult.get(commitName)).get("generation"));
+      long genNumber = Long.parseLong((String)((NamedList)apiResult.get(commitName)).get("generation"));
       result.add(new SnapshotMetaData(commitName, indexDirPath, genNumber));
     }
     return result;
   }
 
   private List<IndexCommit> listCommits(String directory) throws Exception {
-    SimpleFSDirectory dir = new SimpleFSDirectory(Paths.get(directory));
+    Directory dir = new NIOFSDirectory(Paths.get(directory));
     try {
       return DirectoryReader.listCommits(dir);
     } catch (IndexNotFoundException ex) {

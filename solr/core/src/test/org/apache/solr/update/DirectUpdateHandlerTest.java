@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import com.codahale.metrics.Gauge;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.Metric;
-import org.apache.lucene.index.TieredMergePolicy;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.store.Directory;
 import org.apache.solr.SolrTestCaseJ4;
@@ -46,6 +45,8 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.solr.common.params.CommonParams.VERSION_FIELD;
+
 /**
  * 
  *
@@ -60,14 +61,12 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     savedFactory = System.getProperty("solr.DirectoryFactory");
     System.setProperty("solr.directoryFactory", "org.apache.solr.core.MockFSDirectoryFactory");
     System.setProperty("enable.update.log", "false"); // schema12 doesn't support _version_
-    systemSetPropertySolrTestsMergePolicy(TieredMergePolicy.class.getName());
     systemSetPropertySolrTestsMergePolicyFactory(TieredMergePolicyFactory.class.getName());
     initCore("solrconfig.xml", "schema12.xml");
   }
   
   @AfterClass
   public static void afterClass() {
-    systemClearPropertySolrTestsMergePolicy();
     systemClearPropertySolrTestsMergePolicyFactory();
     if (savedFactory == null) {
       System.clearProperty("solr.directoryFactory");
@@ -119,7 +118,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     String delsQName = PREFIX + "deletesByQuery";
     String cumulativeDelsQName = PREFIX + "cumulativeDeletesByQuery";
     long commits = ((Meter) metrics.get(commitsName)).getCount();
-    long adds = ((Gauge<Long>) metrics.get(addsName)).getValue();
+    long adds = ((Gauge<Number>) metrics.get(addsName)).getValue().longValue();
     long cumulativeAdds = ((Meter) metrics.get(cumulativeAddsName)).getCount();
     long cumulativeDelsI = ((Meter) metrics.get(cumulativeDelsIName)).getCount();
     long cumulativeDelsQ = ((Meter) metrics.get(cumulativeDelsQName)).getCount();
@@ -128,7 +127,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     assertNull("This test requires a schema that has no version field, " +
                "it appears the schema file in use has been edited to violate " +
                "this requirement",
-               h.getCore().getLatestSchema().getFieldOrNull(VersionInfo.VERSION_FIELD));
+               h.getCore().getLatestSchema().getFieldOrNull(VERSION_FIELD));
 
     assertU(adoc("id","5"));
     assertU(adoc("id","6"));
@@ -137,7 +136,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     assertQ(req("q","id:5"), "//*[@numFound='0']");
     assertQ(req("q","id:6"), "//*[@numFound='0']");
 
-    long newAdds = ((Gauge<Long>) metrics.get(addsName)).getValue();
+    long newAdds = ((Gauge<Number>) metrics.get(addsName)).getValue().longValue();
     long newCumulativeAdds = ((Meter) metrics.get(cumulativeAddsName)).getCount();
     assertEquals("new adds", 2, newAdds - adds);
     assertEquals("new cumulative adds", 2, newCumulativeAdds - cumulativeAdds);
@@ -147,7 +146,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     long newCommits = ((Meter) metrics.get(commitsName)).getCount();
     assertEquals("new commits", 1, newCommits - commits);
 
-    newAdds = ((Gauge<Long>) metrics.get(addsName)).getValue();
+    newAdds = ((Gauge<Number>) metrics.get(addsName)).getValue().longValue();
     newCumulativeAdds = ((Meter) metrics.get(cumulativeAddsName)).getCount();
     // adds should be reset to 0 after commit
     assertEquals("new adds after commit", 0, newAdds);
@@ -161,7 +160,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     // now delete one
     assertU(delI("5"));
 
-    long newDelsI = ((Gauge<Long>) metrics.get(delsIName)).getValue();
+    long newDelsI = ((Gauge<Number>) metrics.get(delsIName)).getValue().longValue();
     long newCumulativeDelsI = ((Meter) metrics.get(cumulativeDelsIName)).getCount();
     assertEquals("new delsI", 1, newDelsI);
     assertEquals("new cumulative delsI", 1, newCumulativeDelsI - cumulativeDelsI);
@@ -171,7 +170,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
 
     assertU(commit());
     // delsI should be reset to 0 after commit
-    newDelsI = ((Gauge<Long>) metrics.get(delsIName)).getValue();
+    newDelsI = ((Gauge<Number>) metrics.get(delsIName)).getValue().longValue();
     newCumulativeDelsI = ((Meter) metrics.get(cumulativeDelsIName)).getCount();
     assertEquals("new delsI after commit", 0, newDelsI);
     assertEquals("new cumulative delsI after commit", 1, newCumulativeDelsI - cumulativeDelsI);
@@ -183,7 +182,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     // now delete all
     assertU(delQ("*:*"));
 
-    long newDelsQ = ((Gauge<Long>) metrics.get(delsQName)).getValue();
+    long newDelsQ = ((Gauge<Number>) metrics.get(delsQName)).getValue().longValue();
     long newCumulativeDelsQ = ((Meter) metrics.get(cumulativeDelsQName)).getCount();
     assertEquals("new delsQ", 1, newDelsQ);
     assertEquals("new cumulative delsQ", 1, newCumulativeDelsQ - cumulativeDelsQ);
@@ -193,7 +192,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
 
     assertU(commit());
 
-    newDelsQ = ((Gauge<Long>) metrics.get(delsQName)).getValue();
+    newDelsQ = ((Gauge<Number>) metrics.get(delsQName)).getValue().longValue();
     newCumulativeDelsQ = ((Meter) metrics.get(cumulativeDelsQName)).getCount();
     assertEquals("new delsQ after commit", 0, newDelsQ);
     assertEquals("new cumulative delsQ after commit", 1, newCumulativeDelsQ - cumulativeDelsQ);
@@ -204,11 +203,11 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
     // verify final metrics
     newCommits = ((Meter) metrics.get(commitsName)).getCount();
     assertEquals("new commits", 3, newCommits - commits);
-    newAdds = ((Gauge<Long>) metrics.get(addsName)).getValue();
+    newAdds = ((Gauge<Number>) metrics.get(addsName)).getValue().longValue();
     assertEquals("new adds", 0, newAdds);
     newCumulativeAdds = ((Meter) metrics.get(cumulativeAddsName)).getCount();
     assertEquals("new cumulative adds", 2, newCumulativeAdds - cumulativeAdds);
-    newDelsI = ((Gauge<Long>) metrics.get(delsIName)).getValue();
+    newDelsI = ((Gauge<Number>) metrics.get(delsIName)).getValue().longValue();
     assertEquals("new delsI", 0, newDelsI);
     newCumulativeDelsI = ((Meter) metrics.get(cumulativeDelsIName)).getCount();
     assertEquals("new cumulative delsI", 1, newCumulativeDelsI - cumulativeDelsI);
@@ -380,7 +379,7 @@ public class DirectUpdateHandlerTest extends SolrTestCaseJ4 {
   @Test
   public void testPrepareCommit() throws Exception {
     assertU(adoc("id", "999"));
-    assertU(optimize());     // make sure there's just one segment
+    assertU(optimize("maxSegments", "1"));     // make sure there's just one segment
     assertU(commit());       // commit a second time to make sure index files aren't still referenced by the old searcher
 
     SolrQueryRequest sr = req();

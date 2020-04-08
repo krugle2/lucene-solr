@@ -20,7 +20,9 @@ import org.apache.solr.common.util.NamedList;
 import org.apache.solr.schema.IndexSchema;
 
 /**
- * Stores a core's configuration in the form of a SolrConfig and IndexSchema
+ * Stores a core's configuration in the form of a SolrConfig and IndexSchema.
+ * Immutable.
+ * @see ConfigSetService
  */
 public class ConfigSet {
 
@@ -32,11 +34,15 @@ public class ConfigSet {
 
   private final NamedList properties;
 
-  public ConfigSet(String name, SolrConfig solrConfig, IndexSchema indexSchema, NamedList properties) {
+  private final boolean trusted;
+
+  public ConfigSet(String name, SolrConfig solrConfig, IndexSchema indexSchema,
+      NamedList properties, boolean trusted) {
     this.name = name;
     this.solrconfig = solrConfig;
     this.indexSchema = indexSchema;
     this.properties = properties;
+    this.trusted = trusted;
   }
 
   public String getName() {
@@ -53,5 +59,9 @@ public class ConfigSet {
 
   public NamedList getProperties() {
     return properties;
+  }
+  
+  public boolean isTrusted() {
+    return trusted;
   }
 }

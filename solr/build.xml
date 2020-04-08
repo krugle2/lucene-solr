@@ -32,7 +32,6 @@
     <echo message="Use 'ant documentation' to build documentation." />
     <echo message="Use 'ant generate-maven-artifacts' to generate maven artifacts." />
     <echo message="Use 'ant package' to generate zip, tgz for distribution." />
-    <!--<echo message="Use 'ant luke' to start luke.  see: http://luke.googlecode.com" />-->
     <echo message="Use 'ant test' to run unit tests." />
   </target>
 
@@ -49,6 +48,7 @@
     </ant>
     <jar destfile="${example}/exampledocs/post.jar">
       <fileset dir="${dest}/solr-core/classes/java">
+        <include name="org/apache/solr/util/CLIO.class"/>
         <include name="org/apache/solr/util/SimplePostTool*.class"/>
         <include name="org/apache/solr/util/RTimer.class"/>
         <include name="org/apache/solr/util/RTimer$*.class"/>
@@ -92,41 +92,6 @@
     <setproxy proxyhost="${proxy.host}" proxyport="${proxy.port}" proxyuser="${proxy.user}" proxypassword="${proxy.password}"/>
   </target>
 
-  <!--LUCENE-3286: Luke is incompatible with new XML QP location and target is not flexible
-  when it comes to incompatible changes.  Update when Luke has updated.
-  <target name="compile-xml-query-parser">
-    <ant dir="${common.dir}/queryparser" target="compile-core" inheritAll="false">
-      <propertyset refid="uptodate.and.compiled.properties"/>
-    </ant>
-  </target>
-
-  <property  name="luke.version" value="1.0.1"/>
-  <available file="luke/luke-${luke.version}.jar" property="luke.jar.exists" />
-  <target name="luke-download" unless="luke.jar.exists" depends="proxy.setup,compile-xml-query-parser">
-    <mkdir dir="luke"/>
-    <get src="http://luke.googlecode.com/files/luke-${luke.version}.jar"
-         dest="luke/luke-${luke.version}.jar"/>
-  </target>
-  <path id="luke.classpath">
-    <pathelement location="${common.dir}/build/core/classes/java" />
-    <pathelement location="${common.dir}/queryparser/build/classes/java" />
-  </path>
-  <target name="luke" depends="luke-download">
-    <java fork="true"
-          classname="org.getopt.luke.Luke"
-          logError="true"
-          failonerror="true">
-      <classpath>
-        <fileset dir="luke">
-          <include name="luke-${luke.version}.jar"/>
-        </fileset>
-        <path refid="classpath"/>
-        <path refid="luke.classpath"/>
-        <path refid="test.classpath"/>
-      </classpath>
-    </java>
-  </target>-->
-  
   <!-- ========================================================================= -->
   <!-- ========================== BUILD/TEST TASKS ============================= -->
   <!-- ========================================================================= -->
@@ -188,25 +153,14 @@
   <target name="javadocs" description="Calls javadocs-all, javadocs-solrj, and javadocs-test-framework"
           depends="define-lucene-javadoc-url,javadocs-solr-core,javadocs-solrj,javadocs-test-framework,javadocs-contrib"/>
   <target name="documentation" description="Generate all documentation"
-    depends="javadocs,changes-to-html,process-webpages"/>
+          depends="javadocs,changes-to-html,process-webpages">
+    <ant dir="solr-ref-guide" target="bare-bones-html-validation" inheritall="false">
+      <propertyset refid="uptodate.and.compiled.properties"/>
+      <property name="local.javadocs" value="true" />
+    </ant>
+  </target>
   <target name="compile-core" depends="compile-solr-core" unless="solr.core.compiled"/>
 
-  <target name="generate-website-quickstart"
-          description="Generate a version of the quickstart tutorial suitable for the website, at build/website/quickstart.mdtext">
-    <copy file="${common-solr.dir}/site/quickstart.mdtext" tofile="${common-solr.dir}/build/website/quickstart.mdtext"
-          overwrite="false" encoding="UTF-8">
-      <filterchain>
-        <tokenfilter>
-          <filetokenizer/>
-          <!-- Website images are under /solr/assets/images/ -->
-          <replaceregex pattern="src\s*=\s*&quot;images/" replace="src=&quot;/solr/assets/images/" flags="gs"/>
-          <!-- Redirect to the website's version-specific system requirements page -->
-          <replaceregex pattern="\(SYSTEM_REQUIREMENTS.html\)" replace="(/solr/api/SYSTEM_REQUIREMENTS.html)" flags="gs"/>
-        </tokenfilter>
-      </filterchain>
-    </copy>
-  </target>
-  
   <target name="documentation-online" description="Generate a link to the online documentation"
       depends="define-solr-javadoc-url">
     <xslt in="${ant.file}" out="${javadoc-online.dir}/index.html" style="site/online-link.xsl" force="true">
@@ -226,6 +180,16 @@
     <makeurl property="process-webpages.buildfiles" separator="|">
       <fileset dir="." includes="core/build.xml,test-framework/build.xml,solrj/build.xml,contrib/**/build.xml"/>
     </makeurl>
+
+    <loadresource property="doc-solr-guide-version-path">
+      <propertyresource name="version"/>
+      <filterchain>
+        <tokenfilter>
+          <filetokenizer/>
+          <replaceregex pattern="^(\d+)\.(\d+).*" replace="\1_\2"/>
+        </tokenfilter>
+      </filterchain>
+    </loadresource>
     <!--
       The XSL input file is ignored completely, but XSL expects one to be given,
       so we pass ourself (${ant.file}) here. The list of module build.xmls is given
@@ -239,6 +203,7 @@
       <param name="buildfiles" expression="${process-webpages.buildfiles}"/>
       <param name="version" expression="${version}"/>
       <param name="luceneJavadocUrl" expression="${lucene.javadoc.url}"/>
+      <param name="solrGuideVersion" expression="${doc-solr-guide-version-path}"/>
     </xslt>
     
     <markdown todir="${javadoc.dir}">
@@ -368,7 +333,7 @@
         <exclude name="package/**"/>
       </additional-excludes>
       <additional-filters>
-        <replaceregex pattern="jetty([^/]+)$" replace="jetty" flags="gi" />
+        <replaceregex pattern="^jetty([^/]+)$" replace="jetty" flags="gi" />
         <!-- start.jar comes from jetty, .jar already stripped by checker defaults --> 
         <replaceregex pattern="^start$" replace="jetty" flags="gi" />
         <replaceregex pattern="slf4j-([^/]+)$" replace="slf4j" flags="gi" />
@@ -443,10 +408,6 @@
   <!-- ===================== DISTRIBUTION-RELATED TASKS ======================== -->
   <!-- ========================================================================= -->
  
-  <target name="copy-to-stage">
-    <copy-to-stage-macro artifacts.dir="${package.dir}"/>
-  </target>
-  
   <target name="dist"
           description="Creates the Solr distribution files."
           depends="dist-solrj, dist-core, dist-test-framework, dist-contrib" />
@@ -467,7 +428,7 @@
   <target name="prepare-release" depends="prepare-release-no-sign, sign-artifacts"/>
  
   <!-- make a distribution -->
-  <target name="package" depends="package-src-tgz,create-package,documentation,-dist-changes,-dist-keys"/>
+  <target name="package" depends="package-src-tgz,create-package,documentation,-dist-changes"/>
 
   <!-- copy changes/ to the release folder -->
   <target name="-dist-changes">
@@ -476,12 +437,6 @@
    </copy>
   </target>
 
-  <!-- copy KEYS to the release folder -->
-  <target name="-dist-keys">
-   <get src="http://home.apache.org/keys/group/lucene.asc" 
-        dest="${package.dir}/KEYS"/>
-  </target>
- 
   <!-- Makes a tarball of the source.    -->
   <!-- Copies NOTICE.txt and LICENSE.txt from solr/ to the root level. -->
   <target name="package-src-tgz" depends="init-dist"
@@ -493,8 +448,6 @@
 
     <!-- Exclude javadoc package-list files under licenses incompatible with the ASL -->
     <delete dir="${src.export.dir}/lucene/tools/javadoc/java8"/>
-    <!-- Exclude clover license files incompatible with the ASL -->
-    <delete dir="${src.export.dir}/lucene/tools/clover"/>
 
     <build-changes changes.src.file="${src.export.dir}/solr/CHANGES.txt"
                    changes.target.dir="${src.export.dir}/solr/docs/changes"
@@ -506,7 +459,7 @@
                   fullpath="${fullnamever}/solr/LUCENE_CHANGES.txt" />
       <tarfileset dir="${src.export.dir}"
                   prefix="${fullnamever}"
-                  excludes="solr/example/**/*.sh solr/example/**/bin/ solr/scripts/**"/>
+                  excludes="solr/example/**/*.sh solr/example/**/bin/ solr/scripts/** gradle/wrapper/gradle-wrapper.jar"/>
       <tarfileset dir="${src.export.dir}"
                   prefix="${fullnamever}"
                   filemode="755"
@@ -578,26 +531,26 @@
       <tarfileset dir="."
                   prefix="${fullnamever}"
                   includes="LICENSE.txt NOTICE.txt CHANGES.txt README.txt SYSTEM_REQUIREMENTS.txt
-                            bin/** server/** example/** contrib/**/lib/** contrib/**/README.txt 
+                            bin/** server/** example/** contrib/**/lib/** contrib/**/conf/** contrib/**/README.txt
                             licenses/**"
                   excludes="licenses/README.committers.txt **/data/ **/logs/* 
                             **/classes/ **/*.sh **/ivy.xml **/build.xml
                             **/bin/ **/*.iml **/*.ipr **/*.iws **/pom.xml 
-                            **/*pom.xml.template server/etc/test/" />
+                            **/*pom.xml.template server/etc/test/ contrib/**/src/" />
       <tarfileset dir="${dest}/contrib-lucene-libs-to-package"
                   prefix="${fullnamever}"
                   includes="**" />
       <tarfileset dir="."
                   filemode="755"
                   prefix="${fullnamever}"
-                  includes="bin/** server/**/*.sh example/**/*.sh example/**/bin/"
+                  includes="bin/** server/**/*.sh example/**/*.sh example/**/bin/ contrib/**/bin/**"
                   excludes="server/etc/test/**" />
       <tarfileset dir="."
                   prefix="${fullnamever}"
                   includes="dist/*.jar
                             dist/solrj-lib/*
                             dist/test-framework/**"
-                  excludes="**/*.tgz **/*.zip **/*.md5 **/*src*.jar **/*docs*.jar **/*.sha1" />
+                  excludes="**/*.tgz **/*.zip **/*.md5 **/*src*.jar **/*docs*.jar **/*.sha1 **/*.sha512" />
       <tarfileset dir="${javadoc-online.dir}"
                   prefix="${fullnamever}/docs" />
     </tar>
@@ -648,14 +601,20 @@
   <target name="resolve" depends="resolve-example,resolve-server">
      <sequential>
      <ant dir="core" target="resolve" inheritall="false">
-         <propertyset refid="uptodate.and.compiled.properties"/>
-      </ant>
+       <propertyset refid="uptodate.and.compiled.properties"/>
+     </ant>
      <ant dir="solrj" target="resolve" inheritall="false">
-         <propertyset refid="uptodate.and.compiled.properties"/>
-      </ant>
+        <propertyset refid="uptodate.and.compiled.properties"/>
+     </ant>
      <ant dir="test-framework" target="resolve" inheritall="false">
-         <propertyset refid="uptodate.and.compiled.properties"/>
-      </ant>
+       <propertyset refid="uptodate.and.compiled.properties"/>
+     </ant>
+     <ant dir="server" target="resolve" inheritall="false">
+       <propertyset refid="uptodate.and.compiled.properties"/>
+     </ant>
+     <ant dir="solr-ref-guide" target="resolve" inheritall="false">
+       <propertyset refid="uptodate.and.compiled.properties"/>
+     </ant>
      <contrib-crawl target="resolve"/>
     </sequential>
   </target>
@@ -669,12 +628,6 @@
   <!-- TODO: does solr have any other docs we should check? -->
   <!-- TODO: also integrate checkJavaDocs.py, which does more checks -->
   <target name="-documentation-lint" depends="documentation">
-    <jtidy-macro>
-       <!-- NOTE: must currently exclude deprecated-list due to a javadocs bug (as of 1.7.0_09)
-            javadocs generates invalid XML if you deprecate a method that takes a parameter
-            with a generic type -->
-      <fileset dir="build/docs" includes="**/*.html" excludes="**/deprecated-list.html,quickstart.html"/>
-    </jtidy-macro>
     <echo message="Checking for broken links..."/>
     <check-broken-links dir="${javadoc.dir}"/>
     <echo message="Checking for malformed docs..."/>
@@ -706,7 +659,21 @@
       <contrib-crawl target="-dist-maven"/>
     </sequential>
   </target>
-  
+
+  <target name="-install-to-maven-local-repo" depends="install-maven-tasks">
+    <sequential>
+      <m2-install pom.xml="${filtered.pom.templates.dir}/solr/pom.xml"/>    <!-- Solr parent POM -->
+      <subant target="-install-to-maven-local-repo" inheritall="false">
+        <propertyset refid="uptodate.and.compiled.properties"/>
+        <fileset dir="core" includes="build.xml"/>
+        <fileset dir="solrj" includes="build.xml"/>
+        <fileset dir="test-framework" includes="build.xml"/>
+        <fileset dir="webapp" includes="build.xml"/>
+      </subant>
+      <contrib-crawl target="-install-to-maven-local-repo"/>
+    </sequential>
+  </target>
+
   <target name="generate-maven-artifacts" depends="-unpack-solr-tgz">
     <ant dir=".." target="resolve" inheritall="false"/>
     <antcall target="-filter-pom-templates" inheritall="false"/>

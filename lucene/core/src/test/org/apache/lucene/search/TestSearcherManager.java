@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.lucene.analysis.MockAnalyzer;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.index.ConcurrentMergeScheduler;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FilterDirectoryReader;
@@ -44,13 +45,12 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.index.ThreadedIndexingAndSearchingTestCase;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.util.LineFileDocs;
 import org.apache.lucene.util.LuceneTestCase.SuppressCodecs;
 import org.apache.lucene.util.LuceneTestCase;
 import org.apache.lucene.util.NamedThreadFactory;
 import org.apache.lucene.util.TestUtil;
 
-@SuppressCodecs({ "SimpleText", "Memory", "Direct" })
+@SuppressCodecs({ "SimpleText", "Direct" })
 public class TestSearcherManager extends ThreadedIndexingAndSearchingTestCase {
 
   boolean warmCalled;
@@ -487,7 +487,7 @@ public class TestSearcherManager extends ThreadedIndexingAndSearchingTestCase {
 
     FilterDirectoryReader reader = new MyFilterDirectoryReader(nrtReader);
     assertEquals(nrtReader, reader.getDelegate());
-    assertEquals(nrtReader, FilterDirectoryReader.unwrap(reader));
+    assertEquals(FilterDirectoryReader.unwrap(nrtReader), FilterDirectoryReader.unwrap(reader));
 
     SearcherManager mgr = new SearcherManager(reader, null);
     for(int i=0;i<10;i++) {
@@ -566,12 +566,14 @@ public class TestSearcherManager extends ThreadedIndexingAndSearchingTestCase {
         @Override
         public void run() {
           try {
-            LineFileDocs docs = new LineFileDocs(random());
-            long runTimeSec = TEST_NIGHTLY ? atLeast(10) : atLeast(2);
-            long endTime = System.nanoTime() + runTimeSec * 1000000000;
-            while (System.nanoTime() < endTime) {
+            int numDocs = TEST_NIGHTLY ? atLeast(20000) : atLeast(200);
+            for (int i = 0; i < numDocs; i++) {
               IndexWriter w = writerRef.get();
-              w.addDocument(docs.nextDoc());
+              Document doc = new Document();
+              doc.add(newTextField("field",
+                                   TestUtil.randomAnalysisString(random(), 256, false),
+                                   Field.Store.YES));
+              w.addDocument(doc);
               if (random().nextInt(1000) == 17) {
                 if (random().nextBoolean()) {
                   w.close();
@@ -581,13 +583,13 @@ public class TestSearcherManager extends ThreadedIndexingAndSearchingTestCase {
                 writerRef.set(new IndexWriter(dir, newIndexWriterConfig(analyzer)));
               }
             }
-            docs.close();
-            stop.set(true);
             if (VERBOSE) {
-              System.out.println("TEST: index count=" + writerRef.get().maxDoc());
+              System.out.println("TEST: index count=" + writerRef.get().getDocStats().maxDoc);
             }
           } catch (IOException ioe) {
             throw new RuntimeException(ioe);
+          } finally {
+            stop.set(true);
           }
         }
       };

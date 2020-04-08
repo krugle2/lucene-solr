@@ -33,8 +33,15 @@ import java.util.Map;
  *     &lt;filter class="solr.DelimitedPayloadTokenFilterFactory" encoder="float" delimiter="|"/&gt;
  *   &lt;/analyzer&gt;
  * &lt;/fieldType&gt;</pre>
+ *
+ * @since 3.1
+ * @lucene.spi {@value #NAME}
  */
 public class DelimitedPayloadTokenFilterFactory extends TokenFilterFactory implements ResourceLoaderAware {
+
+  /** SPI name */
+  public static final String NAME = "delimitedPayload";
+
   public static final String ENCODER_ATTR = "encoder";
   public static final String DELIMITER_ATTR = "delimiter";
 
@@ -51,6 +58,11 @@ public class DelimitedPayloadTokenFilterFactory extends TokenFilterFactory imple
     if (!args.isEmpty()) {
       throw new IllegalArgumentException("Unknown parameters: " + args);
     }
+  }
+
+  /** Default ctor for compatibility with SPI */
+  public DelimitedPayloadTokenFilterFactory() {
+    throw defaultCtorException();
   }
 
   @Override

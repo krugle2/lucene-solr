@@ -26,8 +26,13 @@ import org.apache.lucene.analysis.util.TokenFilterFactory;
  * Factory for {@link FlattenGraphFilter}. 
  *
  * @lucene.experimental
+ * @since 6.4.0
+ * @lucene.spi {@value #NAME}
  */
 public class FlattenGraphFilterFactory extends TokenFilterFactory {
+
+  /** SPI name */
+  public static final String NAME = "flattenGraph";
 
   /** Creates a new FlattenGraphFilterFactory */
   public FlattenGraphFilterFactory(Map<String,String> args) {
@@ -37,6 +42,11 @@ public class FlattenGraphFilterFactory extends TokenFilterFactory {
     }
   }
   
+  /** Default ctor for compatibility with SPI */
+  public FlattenGraphFilterFactory() {
+    throw defaultCtorException();
+  }
+
   @Override
   public TokenStream create(TokenStream input) {
     return new FlattenGraphFilter(input);

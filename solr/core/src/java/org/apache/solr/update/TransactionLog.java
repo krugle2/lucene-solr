@@ -29,9 +29,11 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.lucene.util.BytesRef;
@@ -76,15 +78,13 @@ public class TransactionLog implements Closeable {
   OutputStream os;
   FastOutputStream fos;    // all accesses to this stream should be synchronized on "this" (The TransactionLog)
   int numRecords;
+  boolean isBuffer;
 
   protected volatile boolean deleteOnClose = true;  // we can delete old tlogs since they are currently only used for real-time-get (and in the future, recovery)
 
   AtomicInteger refcount = new AtomicInteger(1);
   Map<String,Integer> globalStringMap = new HashMap<>();
   List<String> globalStringList = new ArrayList<>();
-
-  long snapshot_size;
-  int snapshot_numRecords;
 
   // write a BytesRef as a byte array
   static final JavaBinCodec.ObjectResolver resolver = new JavaBinCodec.ObjectResolver() {
@@ -102,19 +102,20 @@ public class TransactionLog implements Closeable {
   };
 
   public class LogCodec extends JavaBinCodec {
+
     public LogCodec(JavaBinCodec.ObjectResolver resolver) {
       super(resolver);
     }
 
     @Override
-    public void writeExternString(String s) throws IOException {
+    public void writeExternString(CharSequence s) throws IOException {
       if (s == null) {
         writeTag(NULL);
         return;
       }
 
       // no need to synchronize globalStringMap - it's only updated before the first record is written to the log
-      Integer idx = globalStringMap.get(s);
+      Integer idx = globalStringMap.get(s.toString());
       if (idx == null) {
         // write a normal string
         writeStr(s);
@@ -125,10 +126,10 @@ public class TransactionLog implements Closeable {
     }
 
     @Override
-    public String readExternString(DataInputInputStream fis) throws IOException {
+    public CharSequence readExternString(DataInputInputStream fis) throws IOException {
       int idx = readSize(fis);
       if (idx != 0) {// idx != 0 is the index of the extern string
-      // no need to synchronize globalStringList - it's only updated before the first record is written to the log
+        // no need to synchronize globalStringList - it's only updated before the first record is written to the log
         return globalStringList.get(idx - 1);
       } else {// idx == 0 means it has a string value
         // this shouldn't happen with this codec subclass.
@@ -136,6 +137,25 @@ public class TransactionLog implements Closeable {
       }
     }
 
+    @Override
+    protected Object readObject(DataInputInputStream dis) throws IOException {
+      if (UUID == tagByte) {
+        return new java.util.UUID(dis.readLong(), dis.readLong());
+      }
+      return super.readObject(dis);
+    }
+
+    @Override
+    public boolean writePrimitive(Object val) throws IOException {
+      if (val instanceof java.util.UUID) {
+        java.util.UUID uuid = (java.util.UUID) val;
+        daos.writeByte(UUID);
+        daos.writeLong(uuid.getMostSignificantBits());
+        daos.writeLong(uuid.getLeastSignificantBits());
+        return true;
+      }
+      return super.writePrimitive(val);
+    }
   }
 
   TransactionLog(File tlogFile, Collection<String> globalStrings) {
@@ -151,7 +171,7 @@ public class TransactionLog implements Closeable {
 
       // Parse tlog id from the filename
       String filename = tlogFile.getName();
-      id = Long.parseLong(filename.substring(filename.indexOf('.') + 1, filename.indexOf('.') + 20));
+      id = Long.parseLong(filename.substring(filename.lastIndexOf('.')+1));
 
       this.tlogFile = tlogFile;
       raf = new RandomAccessFile(this.tlogFile, "rw");
@@ -223,7 +243,7 @@ public class TransactionLog implements Closeable {
     byte[] buf = new byte[ END_MESSAGE.length() ];
     long pos = size - END_MESSAGE.length() - 4;
     if (pos < 0) return false;
-    ChannelFastInputStream is = new ChannelFastInputStream(channel, pos);
+    @SuppressWarnings("resource") final ChannelFastInputStream is = new ChannelFastInputStream(channel, pos);
     is.read(buf);
     for (int i=0; i<buf.length; i++) {
       if (buf[i] != END_MESSAGE.charAt(i)) return false;
@@ -231,31 +251,8 @@ public class TransactionLog implements Closeable {
     return true;
   }
 
-  /** takes a snapshot of the current position and number of records
-   * for later possible rollback, and returns the position */
-  public long snapshot() {
-    synchronized (this) {
-      snapshot_size = fos.size();
-      snapshot_numRecords = numRecords;
-      return snapshot_size;
-    }
-  }
-
-  // This could mess with any readers or reverse readers that are open, or anything that might try to do a log lookup.
-  // This should only be used to roll back buffered updates, not actually applied updates.
-  public void rollback(long pos) throws IOException {
-    synchronized (this) {
-      assert snapshot_size == pos;
-      fos.flush();
-      raf.setLength(pos);
-      fos.setWritten(pos);
-      assert fos.size() == pos;
-      numRecords = snapshot_numRecords;
-    }
-  }
-
   public long writeData(Object o) {
-    LogCodec codec = new LogCodec(resolver);
+    @SuppressWarnings("resource") final LogCodec codec = new LogCodec(resolver);
     try {
       long pos = fos.size();   // if we had flushed, this should be equal to channel.position()
       codec.init(fos);
@@ -270,7 +267,7 @@ public class TransactionLog implements Closeable {
   private void readHeader(FastInputStream fis) throws IOException {
     // read existing header
     fis = fis != null ? fis : new ChannelFastInputStream(channel, 0);
-    LogCodec codec = new LogCodec(resolver);
+    @SuppressWarnings("resource") final LogCodec codec = new LogCodec(resolver);
     Map header = (Map)codec.unmarshal(fis);
 
     fis.readInt(); // skip size
@@ -324,7 +321,7 @@ public class TransactionLog implements Closeable {
     numRecords++;
   }
 
-  private void checkWriteHeader(LogCodec codec, SolrInputDocument optional) throws IOException {
+  protected void checkWriteHeader(LogCodec codec, SolrInputDocument optional) throws IOException {
 
     // Unsynchronized access. We can get away with an unsynchronized access here
     // since we will never get a false non-zero when the position is in fact 0.
@@ -344,17 +341,16 @@ public class TransactionLog implements Closeable {
 
   /**
    * Writes an add update command to the transaction log. This is not applicable for
-   * in-place updates; use {@link #write(AddUpdateCommand, long, int)}.
+   * in-place updates; use {@link #write(AddUpdateCommand, long)}.
    * (The previous pointer (applicable for in-place updates) is set to -1 while writing
    * the command to the transaction log.)
    * @param cmd The add update command to be written
-   * @param flags Options for writing the command to the transaction log
    * @return Returns the position pointer of the written update command
    * 
-   * @see #write(AddUpdateCommand, long, int)
+   * @see #write(AddUpdateCommand, long)
    */
-  public long write(AddUpdateCommand cmd, int flags) {
-    return write(cmd, -1, flags);
+  public long write(AddUpdateCommand cmd) {
+    return write(cmd, -1);
   }
 
   /**
@@ -363,10 +359,9 @@ public class TransactionLog implements Closeable {
    * @param cmd The add update command to be written
    * @param prevPointer The pointer in the transaction log which this update depends 
    * on (applicable for in-place updates)
-   * @param flags Options for writing the command to the transaction log
    * @return Returns the position pointer of the written update command
    */
-  public long write(AddUpdateCommand cmd, long prevPointer, int flags) {
+  public long write(AddUpdateCommand cmd, long prevPointer) {
     assert (-1 <= prevPointer && (cmd.isInPlaceUpdate() || (-1 == prevPointer)));
     
     LogCodec codec = new LogCodec(resolver);
@@ -377,20 +372,21 @@ public class TransactionLog implements Closeable {
 
       // adaptive buffer sizing
       int bufSize = lastAddSize;    // unsynchronized access of lastAddSize should be fine
-      bufSize = Math.min(1024*1024, bufSize+(bufSize>>3)+256);
+      // at least 256 bytes and at most 1 MB
+      bufSize = Math.min(1024*1024, Math.max(256, bufSize+(bufSize>>3)+256));
 
       MemOutputStream out = new MemOutputStream(new byte[bufSize]);
       codec.init(out);
       if (cmd.isInPlaceUpdate()) {
         codec.writeTag(JavaBinCodec.ARR, 5);
-        codec.writeInt(UpdateLog.UPDATE_INPLACE | flags);  // should just take one byte
+        codec.writeInt(UpdateLog.UPDATE_INPLACE);  // should just take one byte
         codec.writeLong(cmd.getVersion());
         codec.writeLong(prevPointer);
         codec.writeLong(cmd.prevVersion);
         codec.writeSolrInputDocument(cmd.getSolrInputDocument());
       } else {
         codec.writeTag(JavaBinCodec.ARR, 3);
-        codec.writeInt(UpdateLog.ADD | flags);  // should just take one byte
+        codec.writeInt(UpdateLog.ADD);  // should just take one byte
         codec.writeLong(cmd.getVersion());
         codec.writeSolrInputDocument(cmd.getSolrInputDocument());
       }
@@ -419,7 +415,7 @@ public class TransactionLog implements Closeable {
     }
   }
 
-  public long writeDelete(DeleteUpdateCommand cmd, int flags) {
+  public long writeDelete(DeleteUpdateCommand cmd) {
     LogCodec codec = new LogCodec(resolver);
 
     try {
@@ -430,7 +426,7 @@ public class TransactionLog implements Closeable {
       MemOutputStream out = new MemOutputStream(new byte[20 + br.length]);
       codec.init(out);
       codec.writeTag(JavaBinCodec.ARR, 3);
-      codec.writeInt(UpdateLog.DELETE | flags);  // should just take one byte
+      codec.writeInt(UpdateLog.DELETE);  // should just take one byte
       codec.writeLong(cmd.getVersion());
       codec.writeByteArray(br.bytes, br.offset, br.length);
 
@@ -449,7 +445,7 @@ public class TransactionLog implements Closeable {
 
   }
 
-  public long writeDeleteByQuery(DeleteUpdateCommand cmd, int flags) {
+  public long writeDeleteByQuery(DeleteUpdateCommand cmd) {
     LogCodec codec = new LogCodec(resolver);
     try {
       checkWriteHeader(codec, null);
@@ -457,7 +453,7 @@ public class TransactionLog implements Closeable {
       MemOutputStream out = new MemOutputStream(new byte[20 + (cmd.query.length())]);
       codec.init(out);
       codec.writeTag(JavaBinCodec.ARR, 3);
-      codec.writeInt(UpdateLog.DELETE_BY_QUERY | flags);  // should just take one byte
+      codec.writeInt(UpdateLog.DELETE_BY_QUERY);  // should just take one byte
       codec.writeLong(cmd.getVersion());
       codec.writeStr(cmd.query);
 
@@ -475,7 +471,7 @@ public class TransactionLog implements Closeable {
   }
 
 
-  public long writeCommit(CommitUpdateCommand cmd, int flags) {
+  public long writeCommit(CommitUpdateCommand cmd) {
     LogCodec codec = new LogCodec(resolver);
     synchronized (this) {
       try {
@@ -487,7 +483,7 @@ public class TransactionLog implements Closeable {
         }
         codec.init(fos);
         codec.writeTag(JavaBinCodec.ARR, 3);
-        codec.writeInt(UpdateLog.COMMIT | flags);  // should just take one byte
+        codec.writeInt(UpdateLog.COMMIT);  // should just take one byte
         codec.writeLong(cmd.getVersion());
         codec.writeStr(END_MESSAGE);  // ensure these bytes are (almost) last in the file
 
@@ -505,6 +501,7 @@ public class TransactionLog implements Closeable {
 
 
   /* This method is thread safe */
+
   public Object lookup(long pos) {
     // A negative position can result from a log replay (which does not re-log, but does
     // update the version map.  This is OK since the node won't be ACTIVE when this happens.
@@ -524,8 +521,9 @@ public class TransactionLog implements Closeable {
       }
 
       ChannelFastInputStream fis = new ChannelFastInputStream(channel, pos);
-      LogCodec codec = new LogCodec(resolver);
-      return codec.readVal(fis);
+      try (LogCodec codec = new LogCodec(resolver)) {
+        return codec.readVal(fis);
+      }
     } catch (IOException e) {
       throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
     }
@@ -625,11 +623,22 @@ public class TransactionLog implements Closeable {
     return 0;
   }
 
+  /**
+   * @return the FastOutputStream size
+   */
+  public synchronized long getLogSizeFromStream() {
+    return fos.size();
+  }
+
   /** Returns a reader that can be used while a log is still in use.
    * Currently only *one* LogReader may be outstanding, and that log may only
    * be used from a single thread. */
   public LogReader getReader(long startingPos) {
     return new LogReader(startingPos);
+  }
+
+  public LogReader getSortedReader(long startingPos) {
+    return new SortedLogReader(startingPos);
   }
 
   /** Returns a single threaded reverse reader */
@@ -713,6 +722,50 @@ public class TransactionLog implements Closeable {
       return channel.size();
     }
 
+  }
+
+  public class SortedLogReader extends LogReader {
+    private long startingPos;
+    private boolean inOrder = true;
+    private TreeMap<Long, Long> versionToPos;
+    Iterator<Long> iterator;
+
+    public SortedLogReader(long startingPos) {
+      super(startingPos);
+      this.startingPos = startingPos;
+    }
+
+    @Override
+    public Object next() throws IOException, InterruptedException {
+      if (versionToPos == null) {
+        versionToPos = new TreeMap<>();
+        Object o;
+        long pos = startingPos;
+
+        long lastVersion = Long.MIN_VALUE;
+        while ( (o = super.next()) != null) {
+          List entry = (List) o;
+          long version = (Long) entry.get(UpdateLog.VERSION_IDX);
+          version = Math.abs(version);
+          versionToPos.put(version, pos);
+          pos = currentPos();
+
+          if (version < lastVersion) inOrder = false;
+          lastVersion = version;
+        }
+        fis.seek(startingPos);
+      }
+
+      if (inOrder) {
+        return super.next();
+      } else {
+        if (iterator == null) iterator = versionToPos.values().iterator();
+        if (!iterator.hasNext()) return null;
+        long pos = iterator.next();
+        if (pos != currentPos()) fis.seek(pos);
+        return super.next();
+      }
+    }
   }
 
   public abstract class ReverseReader {

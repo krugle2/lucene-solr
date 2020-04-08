@@ -128,6 +128,7 @@ public class TestIndexWriterMergePolicy extends LuceneTestCase {
   }
 
   // Test the case where both mergeFactor and maxBufferedDocs change
+  @Nightly
   public void testMaxBufferedDocsChange() throws IOException {
     Directory dir = newDirectory();
 
@@ -221,7 +222,7 @@ public class TestIndexWriterMergePolicy extends LuceneTestCase {
     writer.waitForMerges();
     writer.commit();
     checkInvariants(writer);
-    assertEquals(10, writer.maxDoc());
+    assertEquals(10, writer.getDocStats().maxDoc);
 
     writer.close();
     dir.close();

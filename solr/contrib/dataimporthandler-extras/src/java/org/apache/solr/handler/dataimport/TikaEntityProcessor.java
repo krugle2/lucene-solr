@@ -20,6 +20,7 @@ import org.apache.commons.io.IOUtils;
 import org.apache.tika.config.TikaConfig;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.EmptyParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.html.HtmlMapper;
@@ -62,6 +63,7 @@ import static org.apache.solr.handler.dataimport.XPathEntityProcessor.URL;
  * @since solr 3.1
  */
 public class TikaEntityProcessor extends EntityProcessorBase {
+  private static Parser EMPTY_PARSER = new EmptyParser();
   private TikaConfig tikaConfig;
   private String format = "text";
   private boolean done = false;
@@ -80,20 +82,26 @@ public class TikaEntityProcessor extends EntityProcessorBase {
   @Override
   protected void firstInit(Context context) {
     super.firstInit(context);
+    // See similar code in ExtractingRequestHandler.inform
     try {
-      String tikaConfigFile = context.getResolvedEntityAttribute("tikaConfig");
-      if (tikaConfigFile == null) {
+      String tikaConfigLoc = context.getResolvedEntityAttribute("tikaConfig");
+      if (tikaConfigLoc == null) {
         ClassLoader classLoader = context.getSolrCore().getResourceLoader().getClassLoader();
-        tikaConfig = new TikaConfig(classLoader);
-      } else {
-        File configFile = new File(tikaConfigFile);
-        if (!configFile.isAbsolute()) {
-          configFile = new File(context.getSolrCore().getResourceLoader().getConfigDir(), tikaConfigFile);
+        try (InputStream is = classLoader.getResourceAsStream("solr-default-tika-config.xml")) {
+          tikaConfig = new TikaConfig(is);
         }
-        tikaConfig = new TikaConfig(configFile);
+      } else {
+        File configFile = new File(tikaConfigLoc);
+        if (configFile.isAbsolute()) {
+          tikaConfig = new TikaConfig(configFile);
+        } else { // in conf/
+          try (InputStream is = context.getSolrCore().getResourceLoader().openResource(tikaConfigLoc)) {
+            tikaConfig = new TikaConfig(is);
+          }
+        }
       }
     } catch (Exception e) {
-      wrapAndThrow (SEVERE, e,"Unable to load Tika Config");
+      wrapAndThrow(SEVERE, e,"Unable to load Tika Config");
     }
 
     String extractEmbeddedString = context.getResolvedEntityAttribute("extractEmbedded");
@@ -155,6 +163,8 @@ public class TikaEntityProcessor extends EntityProcessorBase {
         }
         if (extractEmbedded) {
           context.set(Parser.class, tikaParser);
+        } else {
+          context.set(Parser.class, EMPTY_PARSER);
         }
         tikaParser.parse(is, contentHandler, metadata , context);
     } catch (Exception e) {

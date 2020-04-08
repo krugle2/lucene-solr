@@ -35,6 +35,7 @@ import static org.apache.solr.update.processor.ClassificationUpdateProcessorFact
 /**
  * This class implements an UpdateProcessorFactory for the Classification Update Processor.
  * It takes in input a series of parameter that will be necessary to instantiate and use the Classifier
+ * @since 6.1.0
  */
 public class ClassificationUpdateProcessorFactory extends UpdateRequestProcessorFactory {
 
@@ -64,7 +65,7 @@ public class ClassificationUpdateProcessorFactory extends UpdateRequestProcessor
   @Override
   public void init(final NamedList args) {
     if (args != null) {
-      params = SolrParams.toSolrParams(args);
+      params = args.toSolrParams();
       classificationParams = new ClassificationUpdateProcessorParams();
 
       String fieldNames = params.get(INPUT_FIELDS_PARAM);// must be a comma separated list of fields

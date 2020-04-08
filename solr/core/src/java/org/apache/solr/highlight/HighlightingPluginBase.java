@@ -16,27 +16,31 @@
  */
 package org.apache.solr.highlight;
 
-import java.net.URL;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
+import com.codahale.metrics.Counter;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
-import org.apache.solr.common.util.SimpleOrderedMap;
-import org.apache.solr.core.SolrInfoMBean;
+import org.apache.solr.core.SolrInfoBean;
+import org.apache.solr.metrics.SolrMetricsContext;
 
 /**
  * 
  * @since solr 1.3
  */
-public abstract class HighlightingPluginBase implements SolrInfoMBean
+public abstract class HighlightingPluginBase implements SolrInfoBean
 {
-  protected long numRequests;
+  protected Counter numRequests;
   protected SolrParams defaults;
+  protected Set<String> metricNames = ConcurrentHashMap.newKeySet(1);
+  protected SolrMetricsContext solrMetricsContext;
 
   public void init(NamedList args) {
     if( args != null ) {
       Object o = args.get("defaults");
       if (o != null && o instanceof NamedList ) {
-        defaults = SolrParams.toSolrParams((NamedList)o);
+        defaults = ((NamedList) o).toSolrParams();
       }
     }
   }
@@ -50,14 +54,7 @@ public abstract class HighlightingPluginBase implements SolrInfoMBean
 
   @Override
   public abstract String getDescription();
-  @Override
-  public String getSource() { return null; }
-  
-  @Override
-  public String getVersion() {
-    return getClass().getPackage().getSpecificationVersion();
-  }
-  
+
   @Override
   public Category getCategory()
   {
@@ -65,15 +62,14 @@ public abstract class HighlightingPluginBase implements SolrInfoMBean
   }
 
   @Override
-  public URL[] getDocs() {
-    return null;  // this can be overridden, but not required
+  public SolrMetricsContext getSolrMetricsContext() {
+    return solrMetricsContext;
   }
 
   @Override
-  public NamedList getStatistics() {
-    NamedList<Long> lst = new SimpleOrderedMap<>();
-    lst.add("requests", numRequests);
-    return lst;
+  public void initializeMetrics(SolrMetricsContext parentContext, String scope) {
+    solrMetricsContext = parentContext.getChildContext(this);
+    numRequests = solrMetricsContext.counter("requests", getCategory().toString(), scope);
   }
 }
 

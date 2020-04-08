@@ -19,6 +19,7 @@ package org.apache.solr.client.solrj;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -51,12 +52,13 @@ public class SolrSchemalessExampleTest extends SolrExampleTestsBase {
     FileUtils.copyFileToDirectory(new File(ExternalPaths.SERVER_HOME, "solr.xml"), tempSolrHome);
     File collection1Dir = new File(tempSolrHome, "collection1");
     FileUtils.forceMkdir(collection1Dir);
-    FileUtils.copyDirectoryToDirectory(new File(ExternalPaths.SCHEMALESS_CONFIGSET), collection1Dir);
+    FileUtils.copyDirectoryToDirectory(new File(ExternalPaths.DEFAULT_CONFIGSET), collection1Dir);
     Properties props = new Properties();
     props.setProperty("name","collection1");
     OutputStreamWriter writer = null;
     try {
-      writer = new OutputStreamWriter(FileUtils.openOutputStream(new File(collection1Dir, "core.properties")), "UTF-8");
+      writer = new OutputStreamWriter(FileUtils.openOutputStream(
+          new File(collection1Dir, "core.properties")), StandardCharsets.UTF_8);
       props.store(writer, null);
     } finally {
       if (writer != null) {
@@ -65,7 +67,7 @@ public class SolrSchemalessExampleTest extends SolrExampleTestsBase {
         } catch (Exception ignore){}
       }
     }
-    createJetty(tempSolrHome.getAbsolutePath());
+    createAndStartJetty(tempSolrHome.getAbsolutePath());
   }
   @Test
   public void testArbitraryJsonIndexing() throws Exception  {
@@ -79,7 +81,8 @@ public class SolrSchemalessExampleTest extends SolrExampleTestsBase {
     HttpClient httpClient = client.getHttpClient();
     HttpPost post = new HttpPost(client.getBaseURL() + "/update/json/docs");
     post.setHeader("Content-Type", "application/json");
-    post.setEntity(new InputStreamEntity(new ByteArrayInputStream(json.getBytes("UTF-8")), -1));
+    post.setEntity(new InputStreamEntity(
+        new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)), -1));
     HttpResponse response = httpClient.execute(post, HttpClientUtil.createNewHttpClientRequestContext());
     Utils.consumeFully(response.getEntity());
     assertEquals(200, response.getStatusLine().getStatusCode());
@@ -105,7 +108,8 @@ public class SolrSchemalessExampleTest extends SolrExampleTestsBase {
     HttpClient httpClient = client.getHttpClient();
     HttpPost post = new HttpPost(client.getBaseURL() + "/update/json/docs");
     post.setHeader("Content-Type", "application/json");
-    post.setEntity(new InputStreamEntity(new ByteArrayInputStream(json.getBytes("UTF-8")), -1));
+    post.setEntity(new InputStreamEntity(
+        new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)), -1));
     HttpResponse response = httpClient.execute(post);
     assertEquals(200, response.getStatusLine().getStatusCode());
     client.commit();
@@ -133,8 +137,7 @@ public class SolrSchemalessExampleTest extends SolrExampleTestsBase {
     try {
       // setup the server...
       String url = jetty.getBaseUrl().toString() + "/collection1";
-      HttpSolrClient client = getHttpSolrClient(url);
-      client.setConnectionTimeout(DEFAULT_CONNECTION_TIMEOUT);
+      HttpSolrClient client = getHttpSolrClient(url, DEFAULT_CONNECTION_TIMEOUT);
       client.setUseMultiPartPost(random().nextBoolean());
       
       if (random().nextBoolean()) {

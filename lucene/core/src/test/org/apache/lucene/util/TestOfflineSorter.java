@@ -24,10 +24,15 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.index.CorruptIndexException;
+import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.CorruptingIndexOutput;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FilterDirectory;
@@ -72,20 +77,41 @@ public class TestOfflineSorter extends LuceneTestCase {
     }
   }
 
+  private ExecutorService randomExecutorServiceOrNull() {
+    if (random().nextBoolean()) {
+      return null;
+    } else {
+      int maxThreads = TEST_NIGHTLY ? TestUtil.nextInt(random(), 2, 6) : 2;
+      return new ThreadPoolExecutor(1, maxThreads, Long.MAX_VALUE, TimeUnit.MILLISECONDS,
+                                    new LinkedBlockingQueue<Runnable>(),
+                                    new NamedThreadFactory("TestOfflineSorter"));
+    }
+  }
+
+  @Slow
   public void testIntermediateMerges() throws Exception {
     // Sort 20 mb worth of data with 1mb buffer, binary merging.
-    try (Directory dir = newDirectory()) {
-      SortInfo info = checkSort(dir, new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), 2, -1), 
+    try (Directory dir = newFSDirectory(createTempDir())) {
+      ExecutorService exec = randomExecutorServiceOrNull();
+      SortInfo info = checkSort(dir, new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), 2, -1, exec, TestUtil.nextInt(random(), 1, 4)),
                                 generateRandom((int)OfflineSorter.MB * 20));
+      if (exec != null) {
+        exec.shutdownNow();
+      }
       assertTrue(info.mergeRounds > 10);
     }
   }
 
+  @Slow
   public void testSmallRandom() throws Exception {
     // Sort 20 mb worth of data with 1mb buffer.
-    try (Directory dir = newDirectory()) {
-      SortInfo sortInfo = checkSort(dir, new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), OfflineSorter.MAX_TEMPFILES, -1),
+    try (Directory dir = newFSDirectory(createTempDir())) {
+      ExecutorService exec = randomExecutorServiceOrNull();
+      SortInfo sortInfo = checkSort(dir, new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), OfflineSorter.MAX_TEMPFILES, -1, exec, TestUtil.nextInt(random(), 1, 4)),
                                     generateRandom((int)OfflineSorter.MB * 20));
+      if (exec != null) {
+        exec.shutdownNow();
+      }
       assertEquals(3, sortInfo.mergeRounds);
     }
   }
@@ -94,8 +120,12 @@ public class TestOfflineSorter extends LuceneTestCase {
   public void testLargerRandom() throws Exception {
     // Sort 100MB worth of data with 15mb buffer.
     try (Directory dir = newFSDirectory(createTempDir())) {
-      checkSort(dir, new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(16), OfflineSorter.MAX_TEMPFILES, -1), 
+      ExecutorService exec = randomExecutorServiceOrNull();
+      checkSort(dir, new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(16), OfflineSorter.MAX_TEMPFILES, -1, exec, TestUtil.nextInt(random(), 1, 4)),
                 generateRandom((int)OfflineSorter.MB * 100));
+      if (exec != null) {
+        exec.shutdownNow();
+      }
     }
   }
 
@@ -228,7 +258,7 @@ public class TestOfflineSorter extends LuceneTestCase {
   public void testThreadSafety() throws Exception {
     Thread[] threads = new Thread[TestUtil.nextInt(random(), 4, 10)];
     final AtomicBoolean failed = new AtomicBoolean();
-    final int iters = atLeast(1000);
+    final int iters = atLeast(200);
     try (Directory dir = newDirectory()) {
       for(int i=0;i<threads.length;i++) {
         final int threadID = i;
@@ -357,7 +387,7 @@ public class TestOfflineSorter extends LuceneTestCase {
       writeAll(unsorted, generateFixed((int) (OfflineSorter.MB * 3)));
 
       CorruptIndexException e = expectThrows(CorruptIndexException.class, () -> {
-          new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), 10, -1).sort(unsorted.getName());
+          new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), 10, -1, null, 0).sort(unsorted.getName());
         });
       assertTrue(e.getMessage().contains("checksum failed (hardware problem?)"));
     }
@@ -407,7 +437,7 @@ public class TestOfflineSorter extends LuceneTestCase {
       writeAll(unsorted, generateFixed((int) (OfflineSorter.MB * 3)));
 
       EOFException e = expectThrows(EOFException.class, () -> {
-          new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), 10, -1).sort(unsorted.getName());
+          new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(1), 10, -1, null, 0).sort(unsorted.getName());
         });
       assertEquals(1, e.getSuppressed().length);
       assertTrue(e.getSuppressed()[0] instanceof CorruptIndexException);
@@ -415,6 +445,7 @@ public class TestOfflineSorter extends LuceneTestCase {
     }
   }
 
+  @Nightly
   public void testFixedLengthHeap() throws Exception {
     // Make sure the RAM accounting is correct, i.e. if we are sorting fixed width
     // ints (4 bytes) then the heap used is really only 4 bytes per value:
@@ -429,8 +460,12 @@ public class TestOfflineSorter extends LuceneTestCase {
       CodecUtil.writeFooter(out);
     }
 
-    OfflineSorter sorter = new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(4), OfflineSorter.MAX_TEMPFILES, Integer.BYTES);
+    ExecutorService exec = randomExecutorServiceOrNull();
+    OfflineSorter sorter = new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(4), OfflineSorter.MAX_TEMPFILES, Integer.BYTES, exec, TestUtil.nextInt(random(), 1, 4));
     sorter.sort(out.getName());
+    if (exec != null) {
+      exec.shutdownNow();
+    }
     // 1 MB of ints with 4 MH heap allowed should have been sorted in a single heap partition:
     assertEquals(0, sorter.sortInfo.mergeRounds);
     dir.close();
@@ -447,11 +482,52 @@ public class TestOfflineSorter extends LuceneTestCase {
       CodecUtil.writeFooter(out);
     }
 
-    OfflineSorter sorter = new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(4), OfflineSorter.MAX_TEMPFILES, Long.BYTES);
+    OfflineSorter sorter = new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(4), OfflineSorter.MAX_TEMPFILES, Long.BYTES, null, 0);
     IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> {
       sorter.sort(out.getName());
       });
     assertEquals("value length is 4 but is supposed to always be 8", e.getMessage());
+    dir.close();
+  }
+
+  // OfflineSorter should not call my BytesSequencesReader.next() again after it already returned null:
+  public void testOverNexting() throws Exception {
+    Directory dir = newDirectory();
+    IndexOutput out = dir.createTempOutput("unsorted", "tmp", IOContext.DEFAULT);
+    try (ByteSequencesWriter w = new OfflineSorter.ByteSequencesWriter(out)) {
+      byte[] bytes = new byte[Integer.BYTES];
+      random().nextBytes(bytes);
+      w.write(bytes);
+      CodecUtil.writeFooter(out);
+    }
+
+    new OfflineSorter(dir, "foo", OfflineSorter.DEFAULT_COMPARATOR, BufferSize.megabytes(4), OfflineSorter.MAX_TEMPFILES, Integer.BYTES, null, 0) {
+      @Override
+      protected ByteSequencesReader getReader(ChecksumIndexInput in, String name) throws IOException {
+        ByteSequencesReader other = super.getReader(in, name);
+
+        return new ByteSequencesReader(in, name) {
+
+          private boolean alreadyEnded;
+              
+          @Override
+          public BytesRef next() throws IOException {
+            // if we returned null already, OfflineSorter should not call next() again
+            assertFalse(alreadyEnded);
+            BytesRef result = other.next();
+            if (result == null) {
+              alreadyEnded = true;
+            }
+            return result;
+          }
+
+          @Override
+          public void close() throws IOException {
+            other.close();
+          }
+        };
+      }
+    }.sort(out.getName());
     dir.close();
   }
 
@@ -460,13 +536,13 @@ public class TestOfflineSorter extends LuceneTestCase {
     e = expectThrows(IllegalArgumentException.class,
                      () -> {
                        new OfflineSorter(null, "foo", OfflineSorter.DEFAULT_COMPARATOR,
-                                         BufferSize.megabytes(1), OfflineSorter.MAX_TEMPFILES, 0);
+                                         BufferSize.megabytes(1), OfflineSorter.MAX_TEMPFILES, 0, null, 0);
                      });
     assertEquals("valueLength must be 1 .. 32767; got: 0", e.getMessage());
     e = expectThrows(IllegalArgumentException.class,
                      () -> {
                        new OfflineSorter(null, "foo", OfflineSorter.DEFAULT_COMPARATOR,
-                                         BufferSize.megabytes(1), OfflineSorter.MAX_TEMPFILES, Integer.MAX_VALUE);
+                                         BufferSize.megabytes(1), OfflineSorter.MAX_TEMPFILES, Integer.MAX_VALUE, null, 0);
                      });
     assertEquals("valueLength must be 1 .. 32767; got: 2147483647", e.getMessage());
   }

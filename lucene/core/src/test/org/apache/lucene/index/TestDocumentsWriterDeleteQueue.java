@@ -24,7 +24,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.lucene.index.DocumentsWriterDeleteQueue.DeleteSlice;
 import org.apache.lucene.index.PrefixCodedTerms.TermIterator;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.LuceneTestCase;
 import org.apache.lucene.util.ThreadInterruptedException;
@@ -34,8 +36,8 @@ import org.apache.lucene.util.ThreadInterruptedException;
  */
 public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
 
-  public void testUpdateDelteSlices() {
-    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue();
+  public void testUpdateDelteSlices() throws Exception {
+    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue(null);
     final int size = 200 + random().nextInt(500) * RANDOM_MULTIPLIER;
     Integer[] ids = new Integer[size];
     for (int i = 0; i < ids.length; i++) {
@@ -70,11 +72,11 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
       }
       assertEquals(j+1, queue.numGlobalTermDeletes());
     }
-    assertEquals(uniqueValues, bd1.terms.keySet());
-    assertEquals(uniqueValues, bd2.terms.keySet());
+    assertEquals(uniqueValues, bd1.deleteTerms.keySet());
+    assertEquals(uniqueValues, bd2.deleteTerms.keySet());
     HashSet<Term> frozenSet = new HashSet<>();
     BytesRefBuilder bytesRef = new BytesRefBuilder();
-    TermIterator iter = queue.freezeGlobalBuffer(null).termIterator();
+    TermIterator iter = queue.freezeGlobalBuffer(null).deleteTerms.iterator();
     while (iter.next() != null) {
       bytesRef.copyBytes(iter.bytes);
       frozenSet.add(new Term(iter.field(), bytesRef.toBytesRef()));
@@ -87,13 +89,12 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
   private void assertAllBetween(int start, int end, BufferedUpdates deletes,
       Integer[] ids) {
     for (int i = start; i <= end; i++) {
-      assertEquals(Integer.valueOf(end), deletes.terms.get(new Term("id",
-                                                                    ids[i].toString())));
+      assertEquals(Integer.valueOf(end), deletes.deleteTerms.get(new Term("id", ids[i].toString())));
     }
   }
   
   public void testClear() {
-    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue();
+    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue(null);
     assertFalse(queue.anyChanges());
     queue.clear();
     assertFalse(queue.anyChanges());
@@ -116,7 +117,7 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
   }
 
   public void testAnyChanges() {
-    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue();
+    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue(null);
     final int size = 200 + random().nextInt(500) * RANDOM_MULTIPLIER;
     int termsSinceFreeze = 0;
     int queriesSinceFreeze = 0;
@@ -132,8 +133,8 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
       assertTrue(queue.anyChanges());
       if (random().nextInt(5) == 0) {
         FrozenBufferedUpdates freezeGlobalBuffer = queue.freezeGlobalBuffer(null);
-        assertEquals(termsSinceFreeze, freezeGlobalBuffer.terms.size());
-        assertEquals(queriesSinceFreeze, freezeGlobalBuffer.queries.length);
+        assertEquals(termsSinceFreeze, freezeGlobalBuffer.deleteTerms.size());
+        assertEquals(queriesSinceFreeze, freezeGlobalBuffer.deleteQueries.length);
         queriesSinceFreeze = 0;
         termsSinceFreeze = 0;
         assertFalse(queue.anyChanges());
@@ -141,10 +142,8 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
     }
   }
   
-  public void testPartiallyAppliedGlobalSlice() throws SecurityException,
-      NoSuchFieldException, IllegalArgumentException, IllegalAccessException,
-      InterruptedException {
-    final DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue();
+  public void testPartiallyAppliedGlobalSlice() throws Exception {
+    final DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue(null);
     ReentrantLock lock = queue.globalBufferLock;
     lock.lock();
     Thread t = new Thread() {
@@ -161,12 +160,12 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
     assertTrue("changes in global buffer", queue.anyChanges());
     FrozenBufferedUpdates freezeGlobalBuffer = queue.freezeGlobalBuffer(null);
     assertTrue(freezeGlobalBuffer.any());
-    assertEquals(1, freezeGlobalBuffer.terms.size());
+    assertEquals(1, freezeGlobalBuffer.deleteTerms.size());
     assertFalse("all changes applied", queue.anyChanges());
   }
 
-  public void testStressDeleteQueue() throws InterruptedException {
-    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue();
+  public void testStressDeleteQueue() throws Exception {
+    DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue(null);
     Set<Term> uniqueValues = new HashSet<>();
     final int size = 10000 + random().nextInt(500) * RANDOM_MULTIPLIER;
     Integer[] ids = new Integer[size];
@@ -192,13 +191,13 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
       queue.updateSlice(slice);
       BufferedUpdates deletes = updateThread.deletes;
       slice.apply(deletes, BufferedUpdates.MAX_INT);
-      assertEquals(uniqueValues, deletes.terms.keySet());
+      assertEquals(uniqueValues, deletes.deleteTerms.keySet());
     }
     queue.tryApplyGlobalSlice();
     Set<Term> frozenSet = new HashSet<>();
     BytesRefBuilder builder = new BytesRefBuilder();
 
-    TermIterator iter = queue.freezeGlobalBuffer(null).termIterator();
+    TermIterator iter = queue.freezeGlobalBuffer(null).deleteTerms.iterator();
     while (iter.next() != null) {
       builder.copyBytes(iter.bytes);
       frozenSet.add(new Term(iter.field(), builder.toBytesRef()));
@@ -208,7 +207,35 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
         .numGlobalTermDeletes());
     assertEquals(uniqueValues.size(), frozenSet.size());
     assertEquals(uniqueValues, frozenSet);
-   
+  }
+
+  public void testClose() {
+    {
+      DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue(null);
+      assertTrue(queue.isOpen());
+      queue.close();
+      if (random().nextBoolean()) {
+        queue.close(); // double close
+      }
+      expectThrows(AlreadyClosedException.class, () -> queue.addDelete(new Term("foo", "bar")));
+      expectThrows(AlreadyClosedException.class, () -> queue.freezeGlobalBuffer(null));
+      expectThrows(AlreadyClosedException.class, () -> queue.addDelete(new MatchNoDocsQuery()));
+      expectThrows(AlreadyClosedException.class,
+          () -> queue.addDocValuesUpdates(new DocValuesUpdate.NumericDocValuesUpdate(new Term("foo", "bar"), "foo", 1)));
+      expectThrows(AlreadyClosedException.class, () -> queue.add(null));
+      assertNull(queue.maybeFreezeGlobalBuffer()); // this is fine
+      assertFalse(queue.isOpen());
+    }
+    {
+      DocumentsWriterDeleteQueue queue = new DocumentsWriterDeleteQueue(null);
+      queue.addDelete(new Term("foo", "bar"));
+      expectThrows(IllegalStateException.class, () -> queue.close());
+      assertTrue(queue.isOpen());
+      queue.tryApplyGlobalSlice();
+      queue.freezeGlobalBuffer(null);
+      queue.close();
+      assertFalse(queue.isOpen());
+    }
   }
 
   private static class UpdateThread extends Thread {
@@ -239,8 +266,9 @@ public class TestDocumentsWriterDeleteQueue extends LuceneTestCase {
       int i = 0;
       while ((i = index.getAndIncrement()) < ids.length) {
         Term term = new Term("id", ids[i].toString());
-        queue.add(term, slice);
-        assertTrue(slice.isTailItem(term));
+        DocumentsWriterDeleteQueue.Node<Term> termNode = DocumentsWriterDeleteQueue.newNode(term);
+        queue.add(termNode, slice);
+        assertTrue(slice.isTail(termNode));
         slice.apply(deletes, BufferedUpdates.MAX_INT);
       }
     }

@@ -38,8 +38,14 @@ import java.util.Set;
  *                   useWhitelist="false"/&gt;
  *   &lt;/analyzer&gt;
  * &lt;/fieldType&gt;</pre>
+ * @since 3.6.0
+ * @lucene.spi {@value #NAME}
  */
 public class TypeTokenFilterFactory extends TokenFilterFactory implements ResourceLoaderAware {
+
+  /** SPI name */
+  public static final String NAME = "type";
+
   private final boolean useWhitelist;
   private final String stopTypesFiles;
   private Set<String> stopTypes;
@@ -54,6 +60,11 @@ public class TypeTokenFilterFactory extends TokenFilterFactory implements Resour
     }
   }
   
+  /** Default ctor for compatibility with SPI */
+  public TypeTokenFilterFactory() {
+    throw defaultCtorException();
+  }
+
   @Override
   public void inform(ResourceLoader loader) throws IOException {
     List<String> files = splitFileNames(stopTypesFiles);

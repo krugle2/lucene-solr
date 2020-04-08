@@ -23,6 +23,7 @@ import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.codecs.PushPostingsWriterBase;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.store.IndexOutput;
@@ -61,7 +62,7 @@ final class IDVersionPostingsWriter extends PushPostingsWriterBase {
   }
 
   @Override
-  public int setField(FieldInfo fieldInfo) {
+  public void setField(FieldInfo fieldInfo) {
     super.setField(fieldInfo);
     if (fieldInfo.getIndexOptions() != IndexOptions.DOCS_AND_FREQS_AND_POSITIONS) {
       throw new IllegalArgumentException("field must be index using IndexOptions.DOCS_AND_FREQS_AND_POSITIONS");
@@ -72,11 +73,10 @@ final class IDVersionPostingsWriter extends PushPostingsWriterBase {
       throw new IllegalArgumentException("field cannot index term vectors: CheckIndex will report this as index corruption");
     }
     lastState = emptyState;
-    return 0;
   }
 
   @Override
-  public void startTerm() {
+  public void startTerm(NumericDocValues norms) {
     lastDocID = -1;
   }
 
@@ -87,7 +87,7 @@ final class IDVersionPostingsWriter extends PushPostingsWriterBase {
       return;
     }
     if (lastDocID != -1) {
-      throw new IllegalArgumentException("term appears in more than one document");
+      throw new IllegalArgumentException("term appears in more than one document: " + lastDocID + " and " + docID);
     }
     if (termDocFreq != 1) {
       throw new IllegalArgumentException("term appears more than once in the document");
@@ -151,7 +151,7 @@ final class IDVersionPostingsWriter extends PushPostingsWriterBase {
   private long lastEncodedVersion;
 
   @Override
-  public void encodeTerm(long[] longs, DataOutput out, FieldInfo fieldInfo, BlockTermState _state, boolean absolute) throws IOException {
+  public void encodeTerm(DataOutput out, FieldInfo fieldInfo, BlockTermState _state, boolean absolute) throws IOException {
     IDVersionTermState state = (IDVersionTermState) _state;
     out.writeVInt(state.docID);
     if (absolute) {

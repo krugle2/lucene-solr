@@ -20,15 +20,13 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import org.locationtech.spatial4j.context.SpatialContext;
-import org.locationtech.spatial4j.distance.DistanceUtils;
-import org.locationtech.spatial4j.shape.Point;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.ConstNumberSource;
 import org.apache.lucene.queries.function.valuesource.DoubleConstValueSource;
 import org.apache.lucene.queries.function.valuesource.MultiValueSource;
 import org.apache.lucene.queries.function.valuesource.VectorValueSource;
 import org.apache.lucene.spatial.SpatialStrategy;
+import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.SpatialParams;
 import org.apache.solr.schema.AbstractSpatialFieldType;
 import org.apache.solr.schema.FieldType;
@@ -38,6 +36,9 @@ import org.apache.solr.search.SyntaxError;
 import org.apache.solr.search.ValueSourceParser;
 import org.apache.solr.util.DistanceUnits;
 import org.apache.solr.util.SpatialUtils;
+import org.locationtech.spatial4j.context.SpatialContext;
+import org.locationtech.spatial4j.distance.DistanceUtils;
+import org.locationtech.spatial4j.shape.Point;
 
 /**
  * Parses "geodist" creating {@link HaversineConstFunction} or {@link HaversineFunction}
@@ -51,7 +52,19 @@ public class GeoDistValueSourceParser extends ValueSourceParser {
 
     //note: parseValueSourceList can't handle a field reference to an AbstractSpatialFieldType,
     // so those fields are expressly handled via sfield=
-    List<ValueSource> sources = fp.parseValueSourceList();
+    List<ValueSource> sources;
+    try {
+      sources = fp.parseValueSourceList();
+    } catch (SolrException e) {
+      if (e.getMessage().equals("A ValueSource isn't directly available from this field. " +
+          "Instead try a query using the distance as the score.")) {
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "geodist() does not support field names in its arguments " +
+            "when stated fields are solr.LatLonPointSpatialField spatial type, requires sfield param instead");
+      }
+      else {
+        throw e;
+      }
+    }
 
     // "m" is a multi-value source, "x" is a single-value source
     // allow (m,m) (m,x,x) (x,x,m) (x,x,x,x)
@@ -135,7 +148,7 @@ public class GeoDistValueSourceParser extends ValueSourceParser {
       SpatialStrategy strategy = ((SpatialStrategyMultiValueSource) mv2).strategy;
       DistanceUnits distanceUnits = ((SpatialStrategyMultiValueSource) mv2).distanceUnits;
       Point queryPoint = strategy.getSpatialContext().makePoint(constants[1], constants[0]);
-      return strategy.makeDistanceValueSource(queryPoint, distanceUnits.multiplierFromDegreesToThisUnit());
+      return ValueSource.fromDoubleValuesSource(strategy.makeDistanceValueSource(queryPoint, distanceUnits.multiplierFromDegreesToThisUnit()));
     }
 
     if (constants != null && other instanceof VectorValueSource) {

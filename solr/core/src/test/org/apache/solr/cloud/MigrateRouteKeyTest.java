@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.lucene.util.LuceneTestCase;
 import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.client.solrj.impl.BaseHttpSolrClient;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
 import org.apache.solr.client.solrj.impl.HttpSolrClient;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
@@ -33,6 +34,7 @@ import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.RoutingRule;
 import org.apache.solr.common.cloud.Slice;
+import org.apache.solr.common.util.TimeSource;
 import org.apache.solr.util.TimeOut;
 import org.apache.zookeeper.KeeperException;
 import org.junit.BeforeClass;
@@ -80,13 +82,25 @@ public class MigrateRouteKeyTest extends SolrCloudTestCase {
   }
 
   protected void invokeCollectionMigration(CollectionAdminRequest.AsyncCollectionAdminRequest request) throws IOException, SolrServerException, InterruptedException {
-    if (random().nextBoolean()) {
-      cluster.getSolrClient().setSoTimeout(60000);  // can take a while
-      request.process(cluster.getSolrClient());
-    }
-    else {
-      request.processAndWait(cluster.getSolrClient(), 60000);
-    }
+    request.processAndWait(cluster.getSolrClient(), 60000);
+  }
+
+  @Test
+  public void testMissingSplitKey() throws Exception  {
+    String sourceCollection = "testMissingSplitKey-source";
+    CollectionAdminRequest.createCollection(sourceCollection, "conf", 1, 1)
+        .process(cluster.getSolrClient());
+    String targetCollection = "testMissingSplitKey-target";
+    CollectionAdminRequest.createCollection(targetCollection, "conf", 1, 1)
+        .process(cluster.getSolrClient());
+
+    BaseHttpSolrClient.RemoteSolrException remoteSolrException = expectThrows(BaseHttpSolrClient.RemoteSolrException.class,
+        "Expected an exception in case split.key is not specified", () -> {
+          CollectionAdminRequest.migrateData(sourceCollection, targetCollection, "")
+              .setForwardTimeout(45)
+              .process(cluster.getSolrClient());
+        });
+    assertTrue(remoteSolrException.getMessage().contains("split.key cannot be null or empty"));
   }
 
   @Test
@@ -183,7 +197,7 @@ public class MigrateRouteKeyTest extends SolrCloudTestCase {
 
     @Override
     public void run() {
-      TimeOut timeout = new TimeOut(seconds, TimeUnit.SECONDS);
+      TimeOut timeout = new TimeOut(seconds, TimeUnit.SECONDS, TimeSource.NANO_TIME);
       for (int id = 26*3; id < 500 && ! timeout.hasTimedOut(); id++) {
         String shardKey = "" + (char) ('a' + (id % 26)); // See comment in ShardRoutingTest for hash distribution
         SolrInputDocument doc = new SolrInputDocument();

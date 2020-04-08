@@ -111,6 +111,11 @@ class PointValuesWriter {
       }
 
       @Override
+      public int getNumIndexDimensions() {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
       public int getBytesPerDimension() {
         throw new UnsupportedOperationException();
       }
@@ -231,6 +236,11 @@ class PointValuesWriter {
     @Override
     public int getNumDimensions() throws IOException {
       return in.getNumDimensions();
+    }
+
+    @Override
+    public int getNumIndexDimensions() throws IOException {
+      return in.getNumIndexDimensions();
     }
 
     @Override

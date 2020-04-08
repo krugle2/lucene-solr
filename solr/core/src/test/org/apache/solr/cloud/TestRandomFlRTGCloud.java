@@ -66,10 +66,13 @@ public class TestRandomFlRTGCloud extends SolrCloudTestCase {
   /** A basic client for operations at the cloud level, default collection will be set */
   private static CloudSolrClient CLOUD_CLIENT;
   /** One client per node */
-  private static ArrayList<HttpSolrClient> CLIENTS = new ArrayList<>(5);
+  private static final List<HttpSolrClient> CLIENTS = Collections.synchronizedList(new ArrayList<>(5));
 
   /** Always included in fl so we can vet what doc we're looking at */
   private static final FlValidator ID_VALIDATOR = new SimpleFieldValueValidator("id");
+
+  /** Since nested documents are not tested, when _root_ is declared in schema, it is always the same as id */
+  private static final FlValidator ROOT_VALIDATOR = new RenameFieldValueValidator("id" , "_root_");
   
   /** 
    * Types of things we will randomly ask for in fl param, and validate in response docs.
@@ -143,7 +146,7 @@ public class TestRandomFlRTGCloud extends SolrCloudTestCase {
         .withProperty("schema", "schema-psuedo-fields.xml")
         .process(CLOUD_CLIENT);
 
-    waitForRecoveriesToFinish(CLOUD_CLIENT);
+    cluster.waitForActiveCollection(COLLECTION_NAME, numShards, repFactor * numShards); 
 
     for (JettySolrRunner jetty : cluster.getJettySolrRunners()) {
       CLIENTS.add(getHttpSolrClient(jetty.getBaseUrl() + "/" + COLLECTION_NAME + "/"));
@@ -152,15 +155,18 @@ public class TestRandomFlRTGCloud extends SolrCloudTestCase {
 
   @AfterClass
   private static void afterClass() throws Exception {
-    CLOUD_CLIENT.close(); CLOUD_CLIENT = null;
+    if (null != CLOUD_CLIENT) {
+      CLOUD_CLIENT.close();
+      CLOUD_CLIENT = null;
+    }
     for (HttpSolrClient client : CLIENTS) {
       client.close();
     }
-    CLIENTS = null;
+    CLIENTS.clear();
   }
 
   /** 
-   * Tests thta all TransformerFactories that are implicitly provided by Solr are tested in this class
+   * Tests that all TransformerFactories that are implicitly provided by Solr are tested in this class
    *
    * @see FlValidator#getDefaultTransformerFactoryName
    * @see #FL_VALIDATORS
@@ -352,6 +358,7 @@ public class TestRandomFlRTGCloud extends SolrCloudTestCase {
     
     final Set<FlValidator> validators = new LinkedHashSet<>();
     validators.add(ID_VALIDATOR); // always include id so we can be confident which doc we're looking at
+    validators.add(ROOT_VALIDATOR); // always added in a nested schema, with the same value as id
     addRandomFlValidators(random(), validators);
     FlValidator.addParams(validators, params);
 
@@ -379,12 +386,12 @@ public class TestRandomFlRTGCloud extends SolrCloudTestCase {
         params.add("ids", idsToRequest.get(0));
       } else {
         if (random().nextBoolean()) {
-          // each id in it's own param
+          // each id in its own param
           for (String id : idsToRequest) {
             params.add("id",id);
           }
         } else {
-          // add one or more comma seperated ids params
+          // add one or more comma separated ids params
           params.add(buildCommaSepParams(random(), "ids", idsToRequest));
         }
       }
@@ -941,7 +948,7 @@ public class TestRandomFlRTGCloud extends SolrCloudTestCase {
   }
 
   /**
-   * Given an ordered list of values to include in a (key) param, randomly groups them (ie: comma seperated) 
+   * Given an ordered list of values to include in a (key) param, randomly groups them (ie: comma separated) 
    * into actual param key=values which are returned as a new SolrParams instance
    */
   private static SolrParams buildCommaSepParams(final Random rand, final String key, Collection<String> values) {

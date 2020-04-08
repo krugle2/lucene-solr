@@ -18,18 +18,17 @@ package org.apache.lucene.spatial.prefix;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
-import org.locationtech.spatial4j.shape.Point;
-import org.locationtech.spatial4j.shape.Shape;
 import org.apache.lucene.index.IndexReaderContext;
-import org.apache.lucene.queries.function.ValueSource;
+import org.apache.lucene.search.DoubleValuesSource;
 import org.apache.lucene.spatial.prefix.tree.Cell;
 import org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree;
 import org.apache.lucene.util.Bits;
+import org.locationtech.spatial4j.shape.Point;
+import org.locationtech.spatial4j.shape.Shape;
 
 import static org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree.UnitNRShape;
 
@@ -57,14 +56,27 @@ public class NumberRangePrefixTreeStrategy extends RecursivePrefixTreeStrategy {
   }
 
   @Override
-  protected Iterator<Cell> createCellIteratorToIndex(Shape shape, int detailLevel, Iterator<Cell> reuse) {
-    //levels doesn't actually matter; NumberRange based Shapes have their own "level".
-    return super.createCellIteratorToIndex(shape, grid.getMaxLevels(), reuse);
+  protected boolean isPointShape(Shape shape) {
+    if (shape instanceof NumberRangePrefixTree.UnitNRShape) {
+      return ((NumberRangePrefixTree.UnitNRShape)shape).getLevel() == grid.getMaxLevels();
+    } else {
+      return false;
+    }
+  }
+
+  @Override
+  protected boolean isGridAlignedShape(Shape shape) {
+    // any UnitNRShape other than the world is a single cell/term
+    if (shape instanceof NumberRangePrefixTree.UnitNRShape) {
+      return ((NumberRangePrefixTree.UnitNRShape)shape).getLevel() > 0;
+    } else {
+      return false;
+    }
   }
 
   /** Unsupported. */
   @Override
-  public ValueSource makeDistanceValueSource(Point queryPoint, double multiplier) {
+  public DoubleValuesSource makeDistanceValueSource(Point queryPoint, double multiplier) {
     throw new UnsupportedOperationException();
   }
 
@@ -179,7 +191,7 @@ public class NumberRangePrefixTreeStrategy extends RecursivePrefixTreeStrategy {
     @Override
     public String toString() {
       StringBuilder buf = new StringBuilder(2048);
-      buf.append("Facets: level=" + detailLevel + " topLeaves=" + topLeaves + " parentCount=" + parents.size());
+      buf.append("Facets: level=").append(detailLevel).append(" topLeaves=").append(topLeaves).append(" parentCount=").append(parents.size());
       for (Map.Entry<UnitNRShape, FacetParentVal> entry : parents.entrySet()) {
         buf.append('\n');
         if (buf.length() > 1000) {
@@ -187,7 +199,7 @@ public class NumberRangePrefixTreeStrategy extends RecursivePrefixTreeStrategy {
           break;
         }
         final FacetParentVal pVal = entry.getValue();
-        buf.append(' ').append(entry.getKey()+" leafCount=" + pVal.parentLeaves);
+        buf.append(' ').append(entry.getKey()).append(" leafCount=").append(pVal.parentLeaves);
         if (pVal.childCounts != null) {
           buf.append(' ').append(Arrays.toString(pVal.childCounts));
         }

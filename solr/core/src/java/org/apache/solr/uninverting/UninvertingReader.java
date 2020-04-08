@@ -19,13 +19,13 @@ package org.apache.solr.uninverting;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.function.Function;
 
-import org.apache.lucene.document.BinaryDocValuesField; // javadocs
-import org.apache.lucene.document.NumericDocValuesField; // javadocs
-import org.apache.lucene.document.SortedDocValuesField; // javadocs
-import org.apache.lucene.document.SortedNumericDocValuesField;
-import org.apache.lucene.document.SortedSetDocValuesField; // javadocs
-import org.apache.lucene.document.StringField; // javadocs
+import org.apache.lucene.document.BinaryDocValuesField;
+import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.SortedSetDocValuesField;
+import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.DocValuesType;
@@ -53,7 +53,7 @@ import org.apache.solr.uninverting.FieldCache.CacheEntry;
  * based on the core cache key of the wrapped LeafReader.
  */
 public class UninvertingReader extends FilterLeafReader {
-  
+
   /**
    * Specifies the type of uninversion to apply for the field. 
    */
@@ -87,7 +87,7 @@ public class UninvertingReader extends FilterLeafReader {
      */
     DOUBLE_POINT,
     /** 
-     * Single-valued Integer, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyIntField})
+     * Single-valued Integer, (e.g. indexed with {@link org.apache.solr.legacy.LegacyIntField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link NumericDocValuesField}.
@@ -96,7 +96,7 @@ public class UninvertingReader extends FilterLeafReader {
     @Deprecated
     LEGACY_INTEGER,
     /** 
-     * Single-valued Long, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyLongField})
+     * Single-valued Long, (e.g. indexed with {@link org.apache.solr.legacy.LegacyLongField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link NumericDocValuesField}.
@@ -105,7 +105,7 @@ public class UninvertingReader extends FilterLeafReader {
     @Deprecated
     LEGACY_LONG,
     /** 
-     * Single-valued Float, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyFloatField})
+     * Single-valued Float, (e.g. indexed with {@link org.apache.solr.legacy.LegacyFloatField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link NumericDocValuesField}.
@@ -114,7 +114,7 @@ public class UninvertingReader extends FilterLeafReader {
     @Deprecated
     LEGACY_FLOAT,
     /** 
-     * Single-valued Double, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyDoubleField})
+     * Single-valued Double, (e.g. indexed with {@link org.apache.solr.legacy.LegacyDoubleField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link NumericDocValuesField}.
@@ -144,88 +144,70 @@ public class UninvertingReader extends FilterLeafReader {
      */
     SORTED_SET_BINARY,
     /** 
-     * Multi-valued Integer, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyIntField})
+     * Multi-valued Integer, (e.g. indexed with {@link org.apache.solr.legacy.LegacyIntField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link SortedSetDocValuesField}.
      */
     SORTED_SET_INTEGER,
     /** 
-     * Multi-valued Float, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyFloatField})
+     * Multi-valued Float, (e.g. indexed with {@link org.apache.solr.legacy.LegacyFloatField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link SortedSetDocValuesField}.
      */
     SORTED_SET_FLOAT,
     /** 
-     * Multi-valued Long, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyLongField})
+     * Multi-valued Long, (e.g. indexed with {@link org.apache.solr.legacy.LegacyLongField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link SortedSetDocValuesField}.
      */
     SORTED_SET_LONG,
     /** 
-     * Multi-valued Double, (e.g. indexed with {@link org.apache.lucene.legacy.LegacyDoubleField})
+     * Multi-valued Double, (e.g. indexed with {@link org.apache.solr.legacy.LegacyDoubleField})
      * <p>
      * Fields with this type act as if they were indexed with
      * {@link SortedSetDocValuesField}.
      */
-    SORTED_SET_DOUBLE,
-    /** 
-     * Multi-valued Integer, (e.g. indexed with {@link org.apache.lucene.document.IntPoint})
-     * <p>
-     * Fields with this type act as if they were indexed with
-     * {@link SortedNumericDocValuesField}.
-     */
-    SORTED_INTEGER,
-    /** 
-     * Multi-valued Float, (e.g. indexed with {@link org.apache.lucene.document.FloatPoint})
-     * <p>
-     * Fields with this type act as if they were indexed with
-     * {@link SortedNumericDocValuesField}.
-     */
-    SORTED_FLOAT,
-    /** 
-     * Multi-valued Long, (e.g. indexed with {@link org.apache.lucene.document.LongPoint})
-     * <p>
-     * Fields with this type act as if they were indexed with
-     * {@link SortedNumericDocValuesField}.
-     */
-    SORTED_LONG,
-    /** 
-     * Multi-valued Double, (e.g. indexed with {@link org.apache.lucene.document.DoublePoint})
-     * <p>
-     * Fields with this type act as if they were indexed with
-     * {@link SortedNumericDocValuesField}.
-     */
-    SORTED_DOUBLE
+    SORTED_SET_DOUBLE
+
   }
-  
+
+  /** @see #wrap(DirectoryReader, Function) */
+  public static DirectoryReader wrap(DirectoryReader reader, Map<String, Type> mapping) throws IOException {
+    return wrap(reader, mapping::get);
+  }
+
   /**
-   * Wraps a provided DirectoryReader. Note that for convenience, the returned reader
+   * Wraps a provided {@link DirectoryReader}. Note that for convenience, the returned reader
    * can be used normally (e.g. passed to {@link DirectoryReader#openIfChanged(DirectoryReader)})
    * and so on. 
+   * 
+   * @param in input directory reader
+   * @param mapper function to map a field name to an uninversion type.  A Null result means to not uninvert.
+   * @return a wrapped directory reader
    */
-  public static DirectoryReader wrap(DirectoryReader in, final Map<String,Type> mapping) throws IOException {
-    return new UninvertingDirectoryReader(in, mapping);
+  public static DirectoryReader wrap(DirectoryReader in, Function<String, Type> mapper) throws IOException {
+    return new UninvertingDirectoryReader(in, mapper);
   }
-  
+
   static class UninvertingDirectoryReader extends FilterDirectoryReader {
-    final Map<String,Type> mapping;
+    final Function<String, Type> mapper;
     
-    public UninvertingDirectoryReader(DirectoryReader in, final Map<String,Type> mapping) throws IOException {
+    public UninvertingDirectoryReader(DirectoryReader in, final Function<String, Type> mapper) throws IOException {
       super(in, new FilterDirectoryReader.SubReaderWrapper() {
         @Override
         public LeafReader wrap(LeafReader reader) {
-          return new UninvertingReader(reader, mapping);
+          return UninvertingReader.wrap(reader, mapper);
         }
       });
-      this.mapping = mapping;
+      this.mapper = mapper;
     }
 
     @Override
     protected DirectoryReader doWrapDirectoryReader(DirectoryReader in) throws IOException {
-      return new UninvertingDirectoryReader(in, mapping);
+      return new UninvertingDirectoryReader(in, mapper);
     }
 
     // NOTE: delegating the cache helpers is wrong since this wrapper alters the
@@ -237,26 +219,26 @@ public class UninvertingReader extends FilterLeafReader {
       return in.getReaderCacheHelper();
     }
   }
-  
-  final Map<String,Type> mapping;
-  final FieldInfos fieldInfos;
-  
-  /** 
-   * Create a new UninvertingReader with the specified mapping 
+
+  /**
+   * Create a new UninvertingReader with the specified mapping, wrapped around the input.  It may be deemed that there
+   * is no mapping to do, in which case the input is returned.
    * <p>
-   * Expert: This should almost never be used. Use {@link #wrap(DirectoryReader, Map)}
-   * instead.
-   *  
+   * Expert: This should almost never be used. Use {@link #wrap(DirectoryReader, Function)} instead.
+   *
    * @lucene.internal
    */
-  public UninvertingReader(LeafReader in, Map<String,Type> mapping) {
-    super(in);
-    this.mapping = mapping;
-    ArrayList<FieldInfo> filteredInfos = new ArrayList<>();
+  public static LeafReader wrap(LeafReader in, Function<String, Type> mapping) {
+    boolean wrap = false;
+
+    // Calculate a new FieldInfos that has DocValuesType where we didn't before
+    ArrayList<FieldInfo> newFieldInfos = new ArrayList<>(in.getFieldInfos().size());
     for (FieldInfo fi : in.getFieldInfos()) {
       DocValuesType type = fi.getDocValuesType();
-      if (type == DocValuesType.NONE) {        
-        Type t = mapping.get(fi.name);
+      // fields which currently don't have docValues, but are uninvertable (indexed or points data present)
+      if (type == DocValuesType.NONE &&
+          (fi.getIndexOptions() != IndexOptions.NONE || (fi.getPointNumBytes() > 0 && fi.getPointDimensionCount() == 1))) {
+        Type t = mapping.apply(fi.name); // could definitely return null, thus still can't uninvert it
         if (t != null) {
           if (t == Type.INTEGER_POINT || t == Type.LONG_POINT || t == Type.FLOAT_POINT || t == Type.DOUBLE_POINT) {
             // type uses points
@@ -293,22 +275,35 @@ public class UninvertingReader extends FilterLeafReader {
             case SORTED_SET_DOUBLE:
               type = DocValuesType.SORTED_SET;
               break;
-            case SORTED_INTEGER:
-            case SORTED_FLOAT:
-            case SORTED_LONG:
-            case SORTED_DOUBLE:
-              type = DocValuesType.SORTED_NUMERIC;
-              break;
             default:
               throw new AssertionError();
           }
         }
       }
-      filteredInfos.add(new FieldInfo(fi.name, fi.number, fi.hasVectors(), fi.omitsNorms(),
-          fi.hasPayloads(), fi.getIndexOptions(), type, fi.getDocValuesGen(), fi.attributes(),
-          fi.getPointDimensionCount(), fi.getPointNumBytes()));
+      if (type != fi.getDocValuesType()) { // we changed it
+        wrap = true;
+        newFieldInfos.add(new FieldInfo(fi.name, fi.number, fi.hasVectors(), fi.omitsNorms(),
+            fi.hasPayloads(), fi.getIndexOptions(), type, fi.getDocValuesGen(), fi.attributes(),
+            fi.getPointDimensionCount(), fi.getPointIndexDimensionCount(), fi.getPointNumBytes(), fi.isSoftDeletesField()));
+      } else {
+        newFieldInfos.add(fi);
+      }
     }
-    fieldInfos = new FieldInfos(filteredInfos.toArray(new FieldInfo[filteredInfos.size()]));
+    if (!wrap) {
+      return in;
+    } else {
+      FieldInfos fieldInfos = new FieldInfos(newFieldInfos.toArray(new FieldInfo[newFieldInfos.size()]));
+      return new UninvertingReader(in, mapping, fieldInfos);
+    }
+  }
+
+  final Function<String, Type> mapping;
+  final FieldInfos fieldInfos;
+
+  private UninvertingReader(LeafReader in, Function<String, Type> mapping, FieldInfos fieldInfos) {
+    super(in);
+    this.mapping = mapping;
+    this.fieldInfos = fieldInfos;
   }
 
   @Override
@@ -333,6 +328,14 @@ public class UninvertingReader extends FilterLeafReader {
         case LEGACY_FLOAT: return FieldCache.DEFAULT.getNumerics(in, field, FieldCache.LEGACY_FLOAT_PARSER);
         case LEGACY_LONG: return FieldCache.DEFAULT.getNumerics(in, field, FieldCache.LEGACY_LONG_PARSER);
         case LEGACY_DOUBLE: return FieldCache.DEFAULT.getNumerics(in, field, FieldCache.LEGACY_DOUBLE_PARSER);
+        case BINARY:
+        case SORTED:
+        case SORTED_SET_BINARY:
+        case SORTED_SET_DOUBLE:
+        case SORTED_SET_FLOAT:
+        case SORTED_SET_INTEGER:
+        case SORTED_SET_LONG:
+          break;
       }
     }
     return null;
@@ -383,6 +386,17 @@ public class UninvertingReader extends FilterLeafReader {
           return FieldCache.DEFAULT.getDocTermOrds(in, field, FieldCache.INT64_TERM_PREFIX);
         case SORTED_SET_BINARY:
           return FieldCache.DEFAULT.getDocTermOrds(in, field, null);
+        case BINARY:
+        case LEGACY_DOUBLE:
+        case LEGACY_FLOAT:
+        case LEGACY_INTEGER:
+        case LEGACY_LONG:
+        case DOUBLE_POINT:
+        case FLOAT_POINT:
+        case INTEGER_POINT:
+        case LONG_POINT:
+        case SORTED:
+          break;
       }
     }
     return null;
@@ -393,11 +407,7 @@ public class UninvertingReader extends FilterLeafReader {
    * if the field doesn't exist or doesn't have a mapping.
    */
   private Type getType(String field) {
-    FieldInfo info = fieldInfos.fieldInfo(field);
-    if (info == null || info.getDocValuesType() == DocValuesType.NONE) {
-      return null;
-    }
-    return mapping.get(field);
+    return mapping.apply(field);
   }
 
   // NOTE: delegating the cache helpers is wrong since this wrapper alters the

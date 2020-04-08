@@ -27,41 +27,52 @@ import java.util.Map;
 
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queries.function.BoostedQuery;
+import org.apache.lucene.queries.function.FunctionScoreQuery;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.docvalues.BoolDocValues;
 import org.apache.lucene.queries.function.docvalues.DoubleDocValues;
 import org.apache.lucene.queries.function.docvalues.LongDocValues;
 import org.apache.lucene.queries.function.valuesource.*;
+import org.apache.lucene.queries.payloads.PayloadDecoder;
+import org.apache.lucene.queries.payloads.PayloadFunction;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.spell.JaroWinklerDistance;
-import org.apache.lucene.search.spell.LevensteinDistance;
+import org.apache.lucene.search.spell.LevenshteinDistance;
 import org.apache.lucene.search.spell.NGramDistance;
 import org.apache.lucene.search.spell.StringDistance;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.request.SolrRequestInfo;
-import org.apache.solr.schema.CurrencyField;
+import org.apache.solr.schema.CurrencyFieldType;
 import org.apache.solr.schema.FieldType;
+import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
 import org.apache.solr.schema.StrField;
 import org.apache.solr.schema.TextField;
 import org.apache.solr.search.facet.AggValueSource;
 import org.apache.solr.search.facet.AvgAgg;
 import org.apache.solr.search.facet.CountAgg;
+import org.apache.solr.search.facet.CountValsAgg;
 import org.apache.solr.search.facet.HLLAgg;
-import org.apache.solr.search.facet.MaxAgg;
-import org.apache.solr.search.facet.MinAgg;
+import org.apache.solr.search.facet.MinMaxAgg;
+import org.apache.solr.search.facet.MissingAgg;
 import org.apache.solr.search.facet.PercentileAgg;
+import org.apache.solr.search.facet.RelatednessAgg;
+import org.apache.solr.search.facet.StddevAgg;
 import org.apache.solr.search.facet.SumAgg;
 import org.apache.solr.search.facet.SumsqAgg;
 import org.apache.solr.search.facet.UniqueAgg;
+import org.apache.solr.search.facet.UniqueBlockFieldAgg;
+import org.apache.solr.search.facet.UniqueBlockQueryAgg;
+import org.apache.solr.search.facet.VarianceAgg;
 import org.apache.solr.search.function.CollapseScoreFunction;
+import org.apache.solr.search.function.ConcatStringFunction;
+import org.apache.solr.search.function.EqualFunction;
 import org.apache.solr.search.function.OrdFieldSource;
 import org.apache.solr.search.function.ReverseOrdFieldSource;
 import org.apache.solr.search.function.SolrComparisonBoolFunction;
@@ -72,7 +83,9 @@ import org.apache.solr.search.function.distance.HaversineFunction;
 import org.apache.solr.search.function.distance.SquaredEuclideanFunction;
 import org.apache.solr.search.function.distance.StringDistanceFunction;
 import org.apache.solr.search.function.distance.VectorDistanceFunction;
+import org.apache.solr.search.join.ChildFieldValueSourceParser;
 import org.apache.solr.util.DateMathParser;
+import org.apache.solr.util.PayloadUtils;
 import org.apache.solr.util.plugin.NamedListInitializedPlugin;
 import org.locationtech.spatial4j.distance.DistanceUtils;
 
@@ -319,8 +332,7 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
         Query q = fp.parseNestedQuery();
         ValueSource vs = fp.parseValueSource();
-        BoostedQuery bq = new BoostedQuery(q, vs);
-        return new QueryValueSource(bq, 0.0f);
+        return new QueryValueSource(FunctionScoreQuery.boostByValue(q, vs.asDoubleValuesSource()), 0.0f);
       }
     });
     addParser("joindf", new ValueSourceParser() {
@@ -399,7 +411,7 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
         if (distClass.equalsIgnoreCase("jw")) {
           dist = new JaroWinklerDistance();
         } else if (distClass.equalsIgnoreCase("edit")) {
-          dist = new LevensteinDistance();
+          dist = new LevenshteinDistance();
         } else if (distClass.equalsIgnoreCase("ngram")) {
           int ngram = 2;
           if (fp.hasMoreArguments()) {
@@ -438,11 +450,11 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
 
         String fieldName = fp.parseArg();
         SchemaField f = fp.getReq().getSchema().getField(fieldName);
-        if (! (f.getType() instanceof CurrencyField)) {
+        if (! (f.getType() instanceof CurrencyFieldType)) {
           throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
-                                  "Currency function input must be the name of a CurrencyField: " + fieldName);
+                                  "Currency function input must be the name of a CurrencyFieldType: " + fieldName);
         }
-        CurrencyField ft = (CurrencyField) f.getType();
+        CurrencyFieldType ft = (CurrencyFieldType) f.getType();
         String code = fp.hasMoreArguments() ? fp.parseArg() : null;
         return ft.getConvertedValueSource(code, ft.getValueSource(f, fp));
       }
@@ -703,6 +715,52 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
       }
     });
 
+    addParser("payload", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        // payload(field,value[,default, ['min|max|average|first']])
+        //   defaults to "average" and 0.0 default value
+
+        TInfo tinfo = parseTerm(fp); // would have made this parser a new separate class and registered it, but this handy method is private :/
+
+        ValueSource defaultValueSource;
+        if (fp.hasMoreArguments()) {
+          defaultValueSource = fp.parseValueSource();
+        } else {
+          defaultValueSource = new ConstValueSource(0.0f);
+        }
+
+        PayloadFunction payloadFunction = null;
+        String func = "average";
+        if (fp.hasMoreArguments()) {
+          func = fp.parseArg();
+        }
+        payloadFunction = PayloadUtils.getPayloadFunction(func);
+
+        // Support func="first" by payloadFunction=null
+        if(payloadFunction == null && !"first".equals(func)) {
+          // not "first" (or average, min, or max)
+          throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Invalid payload function: " + func);
+        }
+
+        IndexSchema schema = fp.getReq().getCore().getLatestSchema();
+        PayloadDecoder decoder = schema.getPayloadDecoder(tinfo.field);
+
+        if (decoder==null) {
+          throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "No payload decoder found for field: " + tinfo.field);
+        }
+
+        return new FloatPayloadValueSource(
+            tinfo.field,
+            tinfo.val,
+            tinfo.indexedField,
+            tinfo.indexedBytes.get(),
+            decoder,
+            payloadFunction,
+            defaultValueSource);
+      }
+    });
+
     addParser("true", new ValueSourceParser() {
       @Override
       public ValueSource parse(FunctionQParser fp) {
@@ -870,7 +928,7 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
         ValueSource lhsValSource = fp.parseValueSource();
         ValueSource rhsValSource = fp.parseValueSource();
 
-        return new SolrComparisonBoolFunction(lhsValSource, rhsValSource, "eq", (cmp) -> cmp == 0);
+        return new EqualFunction(lhsValSource, rhsValSource, "eq");
       }
     });
 
@@ -878,6 +936,14 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
       @Override
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
         return new DefFunction(fp.parseValueSourceList());
+      }
+    });
+
+    addParser("concat", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        List<ValueSource> sources = fp.parseValueSourceList();
+        return new ConcatStringFunction(sources.toArray(new ValueSource[sources.size()]));
       }
     });
 
@@ -903,6 +969,16 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
       }
     });
 
+    addParser("agg_uniqueBlock", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        if (fp.sp.peek() == QueryParsing.LOCALPARAM_START.charAt(0) ) {
+          return new UniqueBlockQueryAgg(fp.parseNestedQuery());
+        }
+        return new UniqueBlockFieldAgg(fp.parseArg());
+      }
+    });
+
     addParser("agg_hll", new ValueSourceParser() {
       @Override
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
@@ -913,32 +989,53 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
     addParser("agg_sum", new ValueSourceParser() {
       @Override
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
-        return new SumAgg(fp.parseValueSource());
+        return new SumAgg(fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
       }
     });
 
     addParser("agg_avg", new ValueSourceParser() {
       @Override
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
-        return new AvgAgg(fp.parseValueSource());
+        return new AvgAgg(fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
       }
     });
 
     addParser("agg_sumsq", new ValueSourceParser() {
       @Override
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
-        return new SumsqAgg(fp.parseValueSource());
+        return new SumsqAgg(fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
       }
     });
 
-    /***
-     addParser("agg_stdev", new ValueSourceParser() {
-    @Override
-    public ValueSource parse(FunctionQParser fp) throws SyntaxError {
-    return null;
-    }
+    addParser("agg_variance", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        return new VarianceAgg(fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
+      }
+    });
+    
+    addParser("agg_stddev", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        return new StddevAgg(fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
+      }
     });
 
+    addParser("agg_missing", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        return new MissingAgg(fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
+      }
+    });
+
+    addParser("agg_countvals", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        return new CountValsAgg(fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
+      }
+    });
+    
+    /***
      addParser("agg_multistat", new ValueSourceParser() {
     @Override
     public ValueSource parse(FunctionQParser fp) throws SyntaxError {
@@ -950,19 +1047,52 @@ public abstract class ValueSourceParser implements NamedListInitializedPlugin {
     addParser("agg_min", new ValueSourceParser() {
       @Override
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
-        return new MinAgg(fp.parseValueSource());
+        return new MinMaxAgg("min", fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
       }
     });
 
     addParser("agg_max", new ValueSourceParser() {
       @Override
       public ValueSource parse(FunctionQParser fp) throws SyntaxError {
-        return new MaxAgg(fp.parseValueSource());
+        return new MinMaxAgg("max", fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE));
       }
     });
 
-    addParser("agg_percentile", new PercentileAgg.Parser());
+    addParser("agg_percentile", new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        List<Double> percentiles = new ArrayList<>();
+        ValueSource vs = fp.parseValueSource(FunctionQParser.FLAG_DEFAULT | FunctionQParser.FLAG_USE_FIELDNAME_SOURCE);
+        while (fp.hasMoreArguments()) {
+          double val = fp.parseDouble();
+          if (val<0 || val>100) {
+            throw new SyntaxError("requested percentile must be between 0 and 100.  got " + val);
+          }
+          percentiles.add(val);
+        }
 
+        if (percentiles.isEmpty()) {
+          throw new SyntaxError("expected percentile(valsource,percent1[,percent2]*)  EXAMPLE:percentile(myfield,50)");
+        }
+
+        return new PercentileAgg(vs, percentiles);
+      }
+    });
+    
+    addParser("agg_" + RelatednessAgg.NAME, new ValueSourceParser() {
+      @Override
+      public ValueSource parse(FunctionQParser fp) throws SyntaxError {
+        // TODO: (fore & back)-ground should be optional -- use hasMoreArguments
+        // if only one arg, assume it's the foreground
+        // (background is the one that will most commonly just be "*:*")
+        // see notes in RelatednessAgg constructor about why we don't do this yet
+        RelatednessAgg agg = new RelatednessAgg(fp.parseNestedQuery(), fp.parseNestedQuery());
+        agg.setOpts(fp);
+        return agg;
+      }
+    });
+    
+    addParser("childfield", new ChildFieldValueSourceParser());
   }
 
   ///////////////////////////////////////////////////////////////////////////////
@@ -1337,7 +1467,7 @@ abstract class Double2Parser extends NamedParser {
       final FunctionValues aVals =  a.getValues(context, readerContext);
       final FunctionValues bVals =  b.getValues(context, readerContext);
       return new DoubleDocValues(this) {
-         @Override
+        @Override
         public double doubleVal(int doc) throws IOException {
           return func(doc, aVals, bVals);
         }
@@ -1408,7 +1538,7 @@ class BoolConstValueSource extends ConstNumberSource {
     return this.constant == other.constant;
   }
 
-    @Override
+  @Override
   public int getInt() {
     return constant ? 1 : 0;
   }

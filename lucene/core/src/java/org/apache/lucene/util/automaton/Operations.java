@@ -58,6 +58,11 @@ final public class Operations {
    */
   public static final int DEFAULT_MAX_DETERMINIZED_STATES = 10000;
 
+  /**
+   * Maximum level of recursion allowed in recursive operations.
+   */
+  public static final int MAX_RECURSION_LEVEL = 1000;
+
   private Operations() {}
 
   /**
@@ -677,13 +682,14 @@ final public class Operations {
     //System.out.println("DET:");
     //a.writeDot("/l/la/lucene/core/detin.dot");
 
-    SortedIntSet.FrozenIntSet initialset = new SortedIntSet.FrozenIntSet(0, 0);
+    // Same initial values and state will always have the same hashCode
+    FrozenIntSet initialset = new FrozenIntSet(new int[] { 0 }, 683, 0);
 
     // Create state 0:
     b.createState();
 
-    ArrayDeque<SortedIntSet.FrozenIntSet> worklist = new ArrayDeque<>();
-    Map<SortedIntSet.FrozenIntSet,Integer> newstate = new HashMap<>();
+    ArrayDeque<FrozenIntSet> worklist = new ArrayDeque<>();
+    Map<IntSet,Integer> newstate = new HashMap<>();
 
     worklist.add(initialset);
 
@@ -699,7 +705,7 @@ final public class Operations {
     Transition t = new Transition();
 
     while (worklist.size() > 0) {
-      SortedIntSet.FrozenIntSet s = worklist.removeFirst();
+      FrozenIntSet s = worklist.removeFirst();
       //System.out.println("det: pop set=" + s);
 
       // Collate all outgoing transitions by min/1+max:
@@ -740,7 +746,7 @@ final public class Operations {
             if (q >= maxDeterminizedStates) {
               throw new TooComplexToDeterminizeException(a, maxDeterminizedStates);
             }
-            final SortedIntSet.FrozenIntSet p = statesSet.freeze(q);
+            final FrozenIntSet p = statesSet.freeze(q);
             //System.out.println("  make new state=" + q + " -> " + p + " accCount=" + accCount);
             worklist.add(p);
             b.setAccept(q, accCount > 0);
@@ -1018,7 +1024,7 @@ final public class Operations {
     if (a.getNumStates() == 0) {
       return true;
     }
-    return isFinite(new Transition(), a, 0, new BitSet(a.getNumStates()), new BitSet(a.getNumStates()));
+    return isFinite(new Transition(), a, 0, new BitSet(a.getNumStates()), new BitSet(a.getNumStates()), 0);
   }
   
   /**
@@ -1026,13 +1032,16 @@ final public class Operations {
    * there are never transitions to dead states.)
    */
   // TODO: not great that this is recursive... in theory a
-  // large automata could exceed java's stack
-  private static boolean isFinite(Transition scratch, Automaton a, int state, BitSet path, BitSet visited) {
+  // large automata could exceed java's stack so the maximum level of recursion is bounded to 1000
+  private static boolean isFinite(Transition scratch, Automaton a, int state, BitSet path, BitSet visited, int level) {
+    if (level > MAX_RECURSION_LEVEL) {
+      throw new IllegalArgumentException("input automaton is too large: " +  level);
+    }
     path.set(state);
     int numTransitions = a.initTransition(state, scratch);
     for(int t=0;t<numTransitions;t++) {
       a.getTransition(state, t, scratch);
-      if (path.get(scratch.dest) || (!visited.get(scratch.dest) && !isFinite(scratch, a, scratch.dest, path, visited))) {
+      if (path.get(scratch.dest) || (!visited.get(scratch.dest) && !isFinite(scratch, a, scratch.dest, path, visited, level+1))) {
         return false;
       }
     }
@@ -1264,7 +1273,7 @@ final public class Operations {
     int numStates = a.getNumStates();
     int[] states = new int[numStates];
     final BitSet visited = new BitSet(numStates);
-    int upto = topoSortStatesRecurse(a, visited, states, 0, 0);
+    int upto = topoSortStatesRecurse(a, visited, states, 0, 0, 0);
 
     if (upto < states.length) {
       // There were dead states
@@ -1283,14 +1292,19 @@ final public class Operations {
     return states;
   }
 
-  private static int topoSortStatesRecurse(Automaton a, BitSet visited, int[] states, int upto, int state) {
+  // TODO: not great that this is recursive... in theory a
+  // large automata could exceed java's stack so the maximum level of recursion is bounded to 1000
+  private static int topoSortStatesRecurse(Automaton a, BitSet visited, int[] states, int upto, int state, int level) {
+    if (level > MAX_RECURSION_LEVEL) {
+      throw new IllegalArgumentException("input automaton is too large: " + level);
+    }
     Transition t = new Transition();
     int count = a.initTransition(state, t);
     for (int i=0;i<count;i++) {
       a.getNextTransition(t);
       if (!visited.get(t.dest)) {
         visited.set(t.dest);
-        upto = topoSortStatesRecurse(a, visited, states, upto, t.dest);
+        upto = topoSortStatesRecurse(a, visited, states, upto, t.dest, level+1);
       }
     }
     states[upto] = state;

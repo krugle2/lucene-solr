@@ -23,6 +23,7 @@ import java.util.List;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.MultiDocValues;
+import org.apache.lucene.index.OrdinalMap;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.DocIdSet;
@@ -43,7 +44,7 @@ class FacetFieldProcessorByArrayDV extends FacetFieldProcessorByArray {
 
   boolean multiValuedField;
   SortedSetDocValues si;  // only used for term lookups (for both single and multi-valued)
-  MultiDocValues.OrdinalMap ordinalMap = null; // maps per-segment ords to global ords
+  OrdinalMap ordinalMap = null; // maps per-segment ords to global ords
 
   FacetFieldProcessorByArrayDV(FacetContext fcontext, FacetField freq, SchemaField sf) {
     super(fcontext, freq, sf);
@@ -323,13 +324,15 @@ class FacetFieldProcessorByArrayDV extends FacetFieldProcessorByArray {
     int ord = (toGlobal != null && segOrd >= 0) ? (int)toGlobal.get(segOrd) : segOrd;
 
     int arrIdx = ord - startTermIndex;
+    // This code handles faceting prefixes, which narrows the range of ords we want to collect.
+    // It’s not an error for an ord to fall outside this range… we simply want to skip it.
     if (arrIdx >= 0 && arrIdx < nTerms) {
       countAcc.incrementCount(arrIdx, 1);
       if (collectAcc != null) {
-        collectAcc.collect(doc, arrIdx);
+        collectAcc.collect(doc, arrIdx, slotContext);
       }
       if (allBucketsAcc != null) {
-        allBucketsAcc.collect(doc, arrIdx);
+        allBucketsAcc.collect(doc, arrIdx, slotContext);
       }
     }
   }

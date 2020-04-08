@@ -16,21 +16,22 @@
  */
 package org.apache.solr.handler.component;
 
+import java.util.Iterator;
+import java.util.Map;
+
 import org.apache.solr.BaseDistributedSearchTestCase;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
+import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import java.util.Map;
-import java.util.Iterator;
-
 /**
- * Test for QueryComponent's distributed querying
+ * Test for distributed ExpandComponent
  *
- * @see org.apache.solr.handler.component.QueryComponent
+ * @see org.apache.solr.handler.component.ExpandComponent
  */
 public class DistributedExpandComponentTest extends BaseDistributedSearchTestCase {
 
@@ -50,18 +51,18 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     
     del("*:*");
 
-    index_specific(0,"id","1", "term_s", "YYYY", group, "group1", "test_ti", "5",  "test_tl", "10", "test_tf", "2000");
-    index_specific(0,"id","2", "term_s", "YYYY", group, "group1", "test_ti", "50", "test_tl", "100", "test_tf", "200");
-    index_specific(1,"id","5", "term_s", "YYYY", group, "group2", "test_ti", "4",  "test_tl", "10", "test_tf", "2000");
-    index_specific(1,"id","6", "term_s", "YYYY", group, "group2", "test_ti", "10", "test_tl", "100", "test_tf", "200");
-    index_specific(0,"id","7", "term_s", "YYYY", group, "group1", "test_ti", "1",  "test_tl", "100000", "test_tf", "2000");
-    index_specific(1,"id","8", "term_s", "YYYY", group, "group2", "test_ti", "2",  "test_tl", "100000", "test_tf", "200");
-    index_specific(2,"id","9", "term_s", "YYYY", group, "group3", "test_ti", "1000", "test_tl", "1005", "test_tf", "3000");
-    index_specific(2, "id", "10", "term_s", "YYYY", group, "group3", "test_ti", "1500", "test_tl", "1001", "test_tf", "3200");
-    index_specific(2,"id", "11",  "term_s", "YYYY", group, "group3", "test_ti", "1300", "test_tl", "1002", "test_tf", "3300");
-    index_specific(1,"id","12", "term_s", "YYYY", group, "group4", "test_ti", "15",  "test_tl", "10", "test_tf", "2000");
-    index_specific(1,"id","13", "term_s", "YYYY", group, "group4", "test_ti", "16",  "test_tl", "9", "test_tf", "2000");
-    index_specific(1,"id","14", "term_s", "YYYY", group, "group4", "test_ti", "1",  "test_tl", "20", "test_tf", "2000");
+    index_specific(0,"id","1", "term_s", "YYYY", group, "group1", "test_i", "5",  "test_l", "10", "test_f", "2000");
+    index_specific(0,"id","2", "term_s", "YYYY", group, "group1", "test_i", "50", "test_l", "100", "test_f", "200");
+    index_specific(1,"id","5", "term_s", "YYYY", group, "group2", "test_i", "4",  "test_l", "10", "test_f", "2000");
+    index_specific(1,"id","6", "term_s", "YYYY", group, "group2", "test_i", "10", "test_l", "100", "test_f", "200");
+    index_specific(0,"id","7", "term_s", "YYYY", group, "group1", "test_i", "1",  "test_l", "100000", "test_f", "2000");
+    index_specific(1,"id","8", "term_s", "YYYY", group, "group2", "test_i", "2",  "test_l", "100000", "test_f", "200");
+    index_specific(2,"id","9", "term_s", "YYYY", group, "group3", "test_i", "1000", "test_l", "1005", "test_f", "3000");
+    index_specific(2, "id", "10", "term_s", "YYYY", group, "group3", "test_i", "1500", "test_l", "1001", "test_f", "3200");
+    index_specific(2,"id", "11",  "term_s", "YYYY", group, "group3", "test_i", "1300", "test_l", "1002", "test_f", "3300");
+    index_specific(1,"id","12", "term_s", "YYYY", group, "group4", "test_i", "15",  "test_l", "10", "test_f", "2000");
+    index_specific(1,"id","13", "term_s", "YYYY", group, "group4", "test_i", "16",  "test_l", "9", "test_f", "2000");
+    index_specific(1,"id","14", "term_s", "YYYY", group, "group4", "test_i", "1",  "test_l", "20", "test_f", "2000");
 
 
     commit();
@@ -79,33 +80,52 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     handle.put("_version_", SKIP);
     handle.put("expanded", UNORDERED);
 
-    query("q", "*:*", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_ti)", "expand", "true", "fl","*,score");
-    query("q", "*:*", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_ti)", "expand", "true", "expand.sort", "test_tl desc", "fl","*,score");
-    query("q", "*:*", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_ti)", "expand", "true", "expand.sort", "test_tl desc", "expand.rows", "1", "fl","*,score");
+    query("q", "*:*", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_i)", "expand", "true", "fl","*,score");
+    query("q", "*:*", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_i)", "expand", "true", "expand.sort", "test_l desc", "fl","*,score");
+    query("q", "*:*", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_i)", "expand", "true", "expand.sort", "test_l desc", "expand.rows", "1", "fl","*,score");
     //Test no expand results
-    query("q", "test_ti:5", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_ti)", "expand", "true", "expand.sort", "test_tl desc", "expand.rows", "1", "fl","*,score");
+    query("q", "test_i:5", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_i)", "expand", "true", "expand.sort", "test_l desc", "expand.rows", "1", "fl","*,score");
     //Test zero results
-    query("q", "test_ti:5434343", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_ti)", "expand", "true", "expand.sort", "test_tl desc", "expand.rows", "1", "fl","*,score");
+    query("q", "test_i:5434343", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_i)", "expand", "true", "expand.sort", "test_l desc", "expand.rows", "1", "fl","*,score");
     //Test page 2
-    query("q", "*:*", "start","1", "rows", "1", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_ti)", "expand", "true", "fl","*,score");
+    query("q", "*:*", "start","1", "rows", "1", "fq", "{!collapse field="+group+"}", "defType", "edismax", "bf", "field(test_i)", "expand", "true", "fl","*,score");
 
+    // multiple collapse and equal cost
+    ModifiableSolrParams baseParams = params("q", "*:*", "defType", "edismax", "expand", "true", "fl", "*,score",
+        "bf", "field(test_i)", "expand.sort", "id asc");
+    baseParams.set("fq", "{!collapse field="+group+"}", "{!collapse field=test_i}");
+    query(baseParams);
+
+    // multiple collapse and unequal cost case1
+    baseParams.set("fq", "{!collapse cost=1000 field="+group+"}", "{!collapse cost=2000 field=test_i}");
+    query(baseParams);
+
+    // multiple collapse and unequal cost case2
+    baseParams.set("fq", "{!collapse cost=1000 field="+group+"}", "{!collapse cost=200 field=test_i}");
+    query(baseParams);
+
+    ignoreException("missing expand field");
+    SolrException e = expectThrows(SolrException.class, () -> query("q", "*:*", "expand", "true"));
+    assertEquals(SolrException.ErrorCode.BAD_REQUEST.code, e.code());
+    assertTrue(e.getMessage().contains("missing expand field"));
+    resetExceptionIgnores();
 
     //First basic test case.
     ModifiableSolrParams params = new ModifiableSolrParams();
     params.add("q", "*:*");
     params.add("fq", "{!collapse field="+group+"}");
     params.add("defType", "edismax");
-    params.add("bf", "field(test_ti)");
+    params.add("bf", "field(test_i)");
     params.add("expand", "true");
 
     setDistributedParams(params);
     QueryResponse rsp = queryServer(params);
     Map<String, SolrDocumentList> results = rsp.getExpandedResults();
     assertExpandGroups(results, "group1","group2", "group3", "group4");
-    assertExpandGroupCountAndOrder("group1", 2, results, "1.0", "7.0");
-    assertExpandGroupCountAndOrder("group2", 2, results, "5.0", "8.0");
-    assertExpandGroupCountAndOrder("group3", 2, results, "11.0", "9.0");
-    assertExpandGroupCountAndOrder("group4", 2, results, "12.0", "14.0");
+    assertExpandGroupCountAndOrder("group1", 2, results, "1", "7");
+    assertExpandGroupCountAndOrder("group2", 2, results, "5", "8");
+    assertExpandGroupCountAndOrder("group3", 2, results, "11", "9");
+    assertExpandGroupCountAndOrder("group4", 2, results, "12", "14");
 
 
     //Test expand.sort
@@ -114,17 +134,17 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     params.add("q", "*:*");
     params.add("fq", "{!collapse field="+group+"}");
     params.add("defType", "edismax");
-    params.add("bf", "field(test_ti)");
+    params.add("bf", "field(test_i)");
     params.add("expand", "true");
-    params.add("expand.sort", "test_tl desc");
+    params.add("expand.sort", "test_l desc");
     setDistributedParams(params);
     rsp = queryServer(params);
     results = rsp.getExpandedResults();
     assertExpandGroups(results, "group1","group2", "group3", "group4");
-    assertExpandGroupCountAndOrder("group1", 2, results, "7.0", "1.0");
-    assertExpandGroupCountAndOrder("group2", 2, results, "8.0", "5.0");
-    assertExpandGroupCountAndOrder("group3", 2, results, "9.0", "11.0");
-    assertExpandGroupCountAndOrder("group4", 2, results, "14.0", "12.0");
+    assertExpandGroupCountAndOrder("group1", 2, results, "7", "1");
+    assertExpandGroupCountAndOrder("group2", 2, results, "8", "5");
+    assertExpandGroupCountAndOrder("group3", 2, results, "9", "11");
+    assertExpandGroupCountAndOrder("group4", 2, results, "14", "12");
 
 
     //Test expand.rows
@@ -133,19 +153,55 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     params.add("q", "*:*");
     params.add("fq", "{!collapse field="+group+"}");
     params.add("defType", "edismax");
-    params.add("bf", "field(test_ti)");
+    params.add("bf", "field(test_i)");
     params.add("expand", "true");
-    params.add("expand.sort", "test_tl desc");
+    params.add("expand.sort", "test_l desc");
     params.add("expand.rows", "1");
     setDistributedParams(params);
     rsp = queryServer(params);
     results = rsp.getExpandedResults();
     assertExpandGroups(results, "group1","group2", "group3", "group4");
-    assertExpandGroupCountAndOrder("group1", 1, results, "7.0");
-    assertExpandGroupCountAndOrder("group2", 1, results, "8.0");
-    assertExpandGroupCountAndOrder("group3", 1, results, "9.0");
-    assertExpandGroupCountAndOrder("group4", 1, results, "14.0");
+    assertExpandGroupCountAndOrder("group1", 1, results, "7");
+    assertExpandGroupCountAndOrder("group2", 1, results, "8");
+    assertExpandGroupCountAndOrder("group3", 1, results, "9");
+    assertExpandGroupCountAndOrder("group4", 1, results, "14");
 
+    //Test expand.rows = 0 - no docs only expand count
+
+    params = new ModifiableSolrParams();
+    params.add("q", "*:*");
+    params.add("fq", "{!collapse field="+group+"}");
+    params.add("defType", "edismax");
+    params.add("bf", "field(test_i)");
+    params.add("expand", "true");
+    params.add("expand.rows", "0");
+    params.add("fl", "id");
+    setDistributedParams(params);
+    rsp = queryServer(params);
+    results = rsp.getExpandedResults();
+    assertExpandGroups(results, "group1","group2", "group3", "group4");
+    assertExpandGroupCountAndOrder("group1", 0, results);
+    assertExpandGroupCountAndOrder("group2", 0, results);
+    assertExpandGroupCountAndOrder("group3", 0, results);
+    assertExpandGroupCountAndOrder("group4", 0, results);
+
+    //Test expand.rows = 0 with expand.field
+
+    params = new ModifiableSolrParams();
+    params.add("q", "*:*");
+    params.add("fq", "test_l:10");
+    params.add("defType", "edismax");
+    params.add("expand", "true");
+    params.add("expand.fq", "test_f:2000");
+    params.add("expand.field", group);
+    params.add("expand.rows", "0");
+    params.add("fl", "id,score");
+    setDistributedParams(params);
+    rsp = queryServer(params);
+    results = rsp.getExpandedResults();
+    assertExpandGroups(results, "group1", "group4");
+    assertExpandGroupCountAndOrder("group1", 0, results);
+    assertExpandGroupCountAndOrder("group4", 0, results);
 
     //Test key-only fl
 
@@ -153,7 +209,7 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     params.add("q", "*:*");
     params.add("fq", "{!collapse field="+group+"}");
     params.add("defType", "edismax");
-    params.add("bf", "field(test_ti)");
+    params.add("bf", "field(test_i)");
     params.add("expand", "true");
     params.add("fl", "id");
 
@@ -161,10 +217,10 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     rsp = queryServer(params);
     results = rsp.getExpandedResults();
     assertExpandGroups(results, "group1","group2", "group3", "group4");
-    assertExpandGroupCountAndOrder("group1", 2, results, "1.0", "7.0");
-    assertExpandGroupCountAndOrder("group2", 2, results, "5.0", "8.0");
-    assertExpandGroupCountAndOrder("group3", 2, results, "11.0", "9.0");
-    assertExpandGroupCountAndOrder("group4", 2, results, "12.0", "14.0");
+    assertExpandGroupCountAndOrder("group1", 2, results, "1", "7");
+    assertExpandGroupCountAndOrder("group2", 2, results, "5", "8");
+    assertExpandGroupCountAndOrder("group3", 2, results, "11", "9");
+    assertExpandGroupCountAndOrder("group4", 2, results, "12", "14");
 
     //Test distrib.singlePass true
 
@@ -172,7 +228,7 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     params.add("q", "*:*");
     params.add("fq", "{!collapse field="+group+"}");
     params.add("defType", "edismax");
-    params.add("bf", "field(test_ti)");
+    params.add("bf", "field(test_i)");
     params.add("expand", "true");
     params.add("distrib.singlePass", "true");
 
@@ -180,10 +236,10 @@ public class DistributedExpandComponentTest extends BaseDistributedSearchTestCas
     rsp = queryServer(params);
     results = rsp.getExpandedResults();
     assertExpandGroups(results, "group1","group2", "group3", "group4");
-    assertExpandGroupCountAndOrder("group1", 2, results, "1.0", "7.0");
-    assertExpandGroupCountAndOrder("group2", 2, results, "5.0", "8.0");
-    assertExpandGroupCountAndOrder("group3", 2, results, "11.0", "9.0");
-    assertExpandGroupCountAndOrder("group4", 2, results, "12.0", "14.0");
+    assertExpandGroupCountAndOrder("group1", 2, results, "1", "7");
+    assertExpandGroupCountAndOrder("group2", 2, results, "5", "8");
+    assertExpandGroupCountAndOrder("group3", 2, results, "11", "9");
+    assertExpandGroupCountAndOrder("group4", 2, results, "12", "14");
 
   }
 

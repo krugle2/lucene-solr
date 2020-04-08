@@ -18,21 +18,24 @@
 package org.apache.solr.client.solrj.io.stream;
 
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.stream.Collectors;
+import java.util.Optional;
 import java.util.Random;
-import java.util.Iterator;
+import java.util.stream.Collectors;
 
+import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
 import org.apache.solr.client.solrj.io.SolrClientCache;
 import org.apache.solr.client.solrj.io.Tuple;
 import org.apache.solr.client.solrj.io.comp.StreamComparator;
 import org.apache.solr.client.solrj.io.stream.expr.Explanation;
+import org.apache.solr.client.solrj.io.stream.expr.Explanation.ExpressionType;
 import org.apache.solr.client.solrj.io.stream.expr.Expressible;
 import org.apache.solr.client.solrj.io.stream.expr.StreamExplanation;
 import org.apache.solr.client.solrj.io.stream.expr.StreamExpression;
@@ -40,16 +43,19 @@ import org.apache.solr.client.solrj.io.stream.expr.StreamExpressionNamedParamete
 import org.apache.solr.client.solrj.io.stream.expr.StreamExpressionParameter;
 import org.apache.solr.client.solrj.io.stream.expr.StreamExpressionValue;
 import org.apache.solr.client.solrj.io.stream.expr.StreamFactory;
-import org.apache.solr.client.solrj.io.stream.expr.Explanation.ExpressionType;
 import org.apache.solr.client.solrj.request.QueryRequest;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
+import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
+
+import static org.apache.solr.common.params.CommonParams.SORT;
 
 /**
  *  The RandomStream emits a stream of psuedo random Tuples that match the query parameters. Sample expression syntax:
  *  random(collection, q="Hello word", rows="50", fl="title, body")
+ * @since 6.1.0
  **/
 
 public class RandomStream extends TupleStream implements Expressible  {
@@ -60,6 +66,12 @@ public class RandomStream extends TupleStream implements Expressible  {
   protected transient SolrClientCache cache;
   protected transient CloudSolrClient cloudSolrClient;
   private Iterator<SolrDocument> documentIterator;
+  private int x;
+  private boolean outputX;
+
+  public RandomStream() {
+    // Used by the RandomFacade
+  }
 
   public RandomStream(String zkHost,
                       String collection,
@@ -79,10 +91,6 @@ public class RandomStream extends TupleStream implements Expressible  {
       throw new IOException(String.format(Locale.ROOT,"invalid expression %s - collectionName expected as first operand",expression));
     }
 
-    // Named parameters - passed directly to solr as solrparams
-    if(0 == namedParams.size()){
-      throw new IOException(String.format(Locale.ROOT,"invalid expression %s - at least one named parameter expected. eg. 'q=*:*'",expression));
-    }
 
     // pull out known named params
     Map<String,String> params = new HashMap<String,String>();
@@ -91,6 +99,8 @@ public class RandomStream extends TupleStream implements Expressible  {
         params.put(namedParam.getName(), namedParam.getParameter().toString().trim());
       }
     }
+
+
 
     // zkHost, optional - if not provided then will look into factory list to get
     String zkHost = null;
@@ -111,10 +121,29 @@ public class RandomStream extends TupleStream implements Expressible  {
     init(zkHost, collectionName, params);
   }
 
-  private void init(String zkHost, String collection, Map<String, String> props) throws IOException {
+  void init(String zkHost, String collection, Map<String, String> props) throws IOException {
     this.zkHost  = zkHost;
     this.props   = props;
     this.collection = collection;
+    if(props.containsKey(CommonParams.FL)) {
+      String fl = props.get(CommonParams.FL);
+      if(fl != null) {
+        if(fl.equals("*")) {
+          outputX = true;
+        } else {
+          String[] fields = fl.split(",");
+          for (String f : fields) {
+            if (f.trim().equals("x")) {
+              outputX = true;
+            }
+          }
+        }
+      } else {
+        outputX = true;
+      }
+    } else {
+      outputX = true;
+    }
   }
 
   @Override
@@ -172,20 +201,22 @@ public class RandomStream extends TupleStream implements Expressible  {
     if(cache != null) {
       cloudSolrClient = cache.getCloudSolrClient(zkHost);
     } else {
-      cloudSolrClient = new CloudSolrClient(zkHost);
+      final List<String> hosts = new ArrayList<>();
+      hosts.add(zkHost);
+      cloudSolrClient = new CloudSolrClient.Builder(hosts, Optional.empty()).withSocketTimeout(30000).withConnectionTimeout(15000).build();
     }
 
     ModifiableSolrParams params = getParams(this.props);
 
-    params.remove("sort"); //Override any sort.
+    params.remove(SORT); //Override any sort.
 
     Random rand = new Random();
     int seed = rand.nextInt();
 
     String sortField = "random_"+seed;
-    params.add("sort", sortField+" asc");
+    params.add(SORT, sortField+" asc");
 
-    QueryRequest request = new QueryRequest(params);
+    QueryRequest request = new QueryRequest(params, SolrRequest.METHOD.POST);
     try {
       QueryResponse response = request.process(cloudSolrClient, collection);
       SolrDocumentList docs = response.getResults();
@@ -205,9 +236,17 @@ public class RandomStream extends TupleStream implements Expressible  {
     if(documentIterator.hasNext()) {
       Map map = new HashMap();
       SolrDocument doc = documentIterator.next();
-      for(String key  : doc.keySet()) {
-        map.put(key, doc.get(key));
+
+      // Put the generated x-axis first. If there really is an x field it will overwrite it.
+      if(outputX) {
+        map.put("x", x++);
       }
+
+      for(Entry<String, Object> entry : doc.entrySet()) {
+        map.put(entry.getKey(), entry.getValue());
+      }
+
+
       return new Tuple(map);
     } else {
       Map fields = new HashMap();
@@ -219,9 +258,9 @@ public class RandomStream extends TupleStream implements Expressible  {
 
   private ModifiableSolrParams getParams(Map<String, String> props) {
     ModifiableSolrParams params = new ModifiableSolrParams();
-    for(String key : props.keySet()) {
-      String value = props.get(key);
-      params.add(key, value);
+    for(Entry<String, String> entry : props.entrySet()) {
+      String value = entry.getValue();
+      params.add(entry.getKey(), value);
     }
     return params;
   }

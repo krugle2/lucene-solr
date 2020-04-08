@@ -26,6 +26,7 @@ import org.apache.solr.cloud.CloudDescriptor;
 import org.apache.solr.common.cloud.ClusterState;
 import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.Slice;
+import org.apache.solr.common.util.Utils;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.CoreDescriptor;
 import org.apache.solr.metrics.AggregateMetric;
@@ -63,14 +64,14 @@ public class SolrShardReporterTest extends AbstractFullDistribZkTestBase {
     for (JettySolrRunner jetty : jettys) {
       CoreContainer cc = jetty.getCoreContainer();
       SolrMetricManager metricManager = cc.getMetricManager();
-      for (final String coreName : cc.getCoreNames()) {
+      for (final String coreName : cc.getLoadedCoreNames()) {
         CoreDescriptor cd = cc.getCoreDescriptor(coreName);
         if (cd.getCloudDescriptor() == null) { // not a cloud collection
           continue;
         }
         CloudDescriptor cloudDesc = cd.getCloudDescriptor();
         DocCollection docCollection = state.getCollection(cloudDesc.getCollectionName());
-        String replicaName = SolrCoreMetricManager.parseReplicaName(cloudDesc.getCollectionName(), coreName);
+        String replicaName = Utils.parseMetricsReplicaName(cloudDesc.getCollectionName(), coreName);
         if (replicaName == null) {
           replicaName = cloudDesc.getCoreNodeName();
         }

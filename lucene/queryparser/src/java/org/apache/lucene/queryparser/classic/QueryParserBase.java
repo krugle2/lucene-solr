@@ -29,7 +29,7 @@ import org.apache.lucene.queryparser.classic.QueryParser.Operator;
 import org.apache.lucene.queryparser.flexible.standard.CommonQueryParserConfiguration;
 import org.apache.lucene.search.*;
 import org.apache.lucene.search.BooleanClause.Occur;
-import org.apache.lucene.search.BooleanQuery.TooManyClauses;
+import org.apache.lucene.search.IndexSearcher.TooManyClauses;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.QueryBuilder;
@@ -65,7 +65,7 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
 
   protected String field;
   int phraseSlop = 0;
-  float fuzzyMinSim = FuzzyQuery.defaultMinSimilarity;
+  float fuzzyMinSim = FuzzyQuery.defaultMaxEdits;
   int fuzzyPrefixLength = FuzzyQuery.defaultPrefixLength;
   Locale locale = Locale.getDefault();
   TimeZone timeZone = TimeZone.getDefault();
@@ -114,7 +114,7 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
       ParseException e = new ParseException("Cannot parse '" +query+ "': " + tme.getMessage());
       e.initCause(tme);
       throw e;
-    } catch (BooleanQuery.TooManyClauses tmc) {
+    } catch (TooManyClauses tmc) {
       ParseException e = new ParseException("Cannot parse '" +query+ "': too many boolean clauses");
       e.initCause(tmc);
       throw e;
@@ -837,7 +837,7 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
     Query q;
     float fms = fuzzyMinSim;
     try {
-      fms = Float.valueOf(fuzzySlop.image.substring(1)).floatValue();
+      fms = Float.parseFloat(fuzzySlop.image.substring(1));
     } catch (Exception ignored) { }
     if(fms < 0.0f){
       throw new ParseException("Minimum similarity for a FuzzyQuery has to be between 0.0f and 1.0f !");
@@ -853,7 +853,7 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
     int s = phraseSlop;  // default
     if (fuzzySlop != null) {
       try {
-        s = Float.valueOf(fuzzySlop.image.substring(1)).intValue();
+        s = (int)Float.parseFloat(fuzzySlop.image.substring(1));
       }
       catch (Exception ignored) { }
     }
@@ -865,7 +865,7 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
     if (boost != null) {
       float f = (float) 1.0;
       try {
-        f = Float.valueOf(boost.image).floatValue();
+        f = Float.parseFloat(boost.image);
       }
       catch (Exception ignored) {
     /* Should this be handled somehow? (defaults to "no boost", if

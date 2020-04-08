@@ -19,7 +19,6 @@ package org.apache.solr.search.mlt;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
 
 import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
@@ -30,25 +29,24 @@ import org.apache.solr.cloud.SolrCloudTestCase;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.SolrException;
-import org.apache.solr.common.cloud.DocCollection;
-import org.junit.BeforeClass;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 public class CloudMLTQParserTest extends SolrCloudTestCase {
-
-  @BeforeClass
-  public static void setupCluster() throws Exception {
+  
+  @Before
+  public void setupCluster() throws Exception {
     configureCluster(2)
-        .addConfig("conf", configset("cloud-dynamic"))
-        .configure();
-
+    .addConfig("conf", configset("cloud-dynamic"))
+    .configure();
+    
     final CloudSolrClient client = cluster.getSolrClient();
 
     CollectionAdminRequest.createCollection(COLLECTION, "conf", 2, 1)
         .processAndWait(client, DEFAULT_TIMEOUT);
 
-    client.waitForState(COLLECTION, DEFAULT_TIMEOUT, TimeUnit.SECONDS,
-        (n, c) -> DocCollection.isFullyActive(n, c, 2, 1));
+    cluster.waitForActiveCollection(COLLECTION, 2, 2);
 
     String id = "id";
     String FIELD1 = "lowerfilt_u" ;
@@ -89,6 +87,13 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
         .add(sdoc(id, "32", FIELD1, "The slim red fox jumped over the lazy brown dogs.", FIELD2, "yellow white black"))
         .commit(client, COLLECTION);
   }
+  
+  @After
+  public void cleanCluster() throws Exception {
+    if (null != cluster) {
+      cluster.shutdown();
+    }
+  }
 
   public static final String COLLECTION = "mlt-collection";
 
@@ -102,8 +107,11 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
     int[] actualIds = new int[10];
     int i = 0;
     for (SolrDocument solrDocument : solrDocuments) {
-      actualIds[i++] = Integer.valueOf(String.valueOf(solrDocument.getFieldValue("id")));
+      actualIds[i++] = Integer.parseInt(String.valueOf(solrDocument.getFieldValue("id")));
     }
+    
+    Arrays.sort(actualIds);
+    Arrays.sort(expectedIds);
     assertArrayEquals(expectedIds, actualIds);
 
   }
@@ -117,8 +125,11 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
     int[] actualIds = new int[solrDocuments.size()];
     int i = 0;
     for (SolrDocument solrDocument : solrDocuments) {
-      actualIds[i++] = Integer.valueOf(String.valueOf(solrDocument.getFieldValue("id")));
+      actualIds[i++] = Integer.parseInt(String.valueOf(solrDocument.getFieldValue("id")));
     }
+    
+    Arrays.sort(actualIds);
+    Arrays.sort(expectedIds);
     assertArrayEquals(expectedIds, actualIds);
 
     queryResponse = cluster.getSolrClient().query(COLLECTION, new SolrQuery("{!mlt qf=lowerfilt_u^10,lowerfilt1_u^1000 boost=false mintf=0 mindf=0}30"));
@@ -127,8 +138,11 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
     actualIds = new int[solrDocuments.size()];
     i = 0;
     for (SolrDocument solrDocument : solrDocuments) {
-      actualIds[i++] = Integer.valueOf(String.valueOf(solrDocument.getFieldValue("id")));
+      actualIds[i++] = Integer.parseInt(String.valueOf(solrDocument.getFieldValue("id")));
     }
+    
+    Arrays.sort(actualIds);
+    Arrays.sort(expectedIds);
     System.out.println("DEBUG ACTUAL IDS 1: " + Arrays.toString(actualIds));
     assertArrayEquals(expectedIds, actualIds);
 
@@ -138,10 +152,13 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
     actualIds = new int[solrDocuments.size()];
     i = 0;
     for (SolrDocument solrDocument : solrDocuments) {
-      actualIds[i++] = Integer.valueOf(String.valueOf(solrDocument.getFieldValue("id")));
+      actualIds[i++] = Integer.parseInt(String.valueOf(solrDocument.getFieldValue("id")));
     }
+    
+    Arrays.sort(actualIds);
+    Arrays.sort(expectedIds);
     System.out.println("DEBUG ACTUAL IDS 2: " + Arrays.toString(actualIds));
-    assertArrayEquals(expectedIds, actualIds);
+    assertArrayEquals(Arrays.toString(expectedIds) + " " + Arrays.toString(actualIds), expectedIds, actualIds);
   }
 
   @Test
@@ -154,9 +171,12 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
     int[] actualIds = new int[solrDocuments.size()];
     int i = 0;
     for (SolrDocument solrDocument : solrDocuments) {
-      actualIds[i++] = Integer.valueOf(String.valueOf(solrDocument.getFieldValue("id")));
+      actualIds[i++] = Integer.parseInt(String.valueOf(solrDocument.getFieldValue("id")));
     }
-    assertArrayEquals(expectedIds, actualIds);
+    
+    Arrays.sort(actualIds);
+    Arrays.sort(expectedIds);
+    assertArrayEquals(Arrays.toString(expectedIds) + " " + Arrays.toString(actualIds), expectedIds, actualIds);
 
     String[] expectedQueryStrings = new String[]{
         "+(lowerfilt_u:bmw lowerfilt_u:usa) -id:3",
@@ -184,10 +204,12 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
     int[] actualIds = new int[solrDocuments.size()];
     int i = 0;
     for (SolrDocument solrDocument : solrDocuments) {
-      actualIds[i++] = Integer.valueOf(String.valueOf(solrDocument.getFieldValue("id")));
+      actualIds[i++] = Integer.parseInt(String.valueOf(solrDocument.getFieldValue("id")));
     }
 
-    assertArrayEquals(expectedIds, actualIds);
+    Arrays.sort(actualIds);
+    Arrays.sort(expectedIds);
+    assertArrayEquals(Arrays.toString(expectedIds) + " " + Arrays.toString(actualIds), expectedIds, actualIds);
 
   }
 
@@ -236,9 +258,12 @@ public class CloudMLTQParserTest extends SolrCloudTestCase {
     int i = 0;
     StringBuilder sb = new StringBuilder();
     for (SolrDocument solrDocument : solrDocuments) {
-      actualIds[i++] =  Integer.valueOf(String.valueOf(solrDocument.getFieldValue("id")));
+      actualIds[i++] =  Integer.parseInt(String.valueOf(solrDocument.getFieldValue("id")));
       sb.append(actualIds[i-1]).append(", ");
     }
+    
+    Arrays.sort(actualIds);
+    Arrays.sort(expectedIds);
     assertArrayEquals(expectedIds, actualIds);
   }
 

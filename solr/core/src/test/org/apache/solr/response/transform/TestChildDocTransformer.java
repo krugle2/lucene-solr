@@ -16,12 +16,21 @@
  */
 package org.apache.solr.response.transform;
 
+import java.util.Collection;
+import java.util.Iterator;
+
 import org.apache.lucene.util.TestUtil;
 import org.apache.solr.SolrTestCaseJ4;
+import org.apache.solr.common.SolrDocument;
+import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.request.SolrQueryRequest;
+import org.apache.solr.response.BasicResultContext;
 import org.junit.After;
 import org.junit.BeforeClass;
 import org.junit.Test;
+
+import static org.hamcrest.core.StringContains.containsString;
 
 public class TestChildDocTransformer extends SolrTestCaseJ4 {
 
@@ -30,7 +39,7 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
 
   @BeforeClass
   public static void beforeClass() throws Exception {
-    initCore("solrconfig.xml","schema.xml");
+    initCore("solrconfig.xml","schema-root.xml"); // *not* the "nest" schema
   }
 
   @After
@@ -59,39 +68,64 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
     
     testSubQueryXML();
     testSubQueryJSON();
+
+    testChildDocNonStoredDVFields();
+    testChildReturnFields();
   }
 
-  private void testChildDoctransformerXML() {
+  private void testChildDoctransformerXML() throws Exception {
     String test1[] = new String[] {
         "//*[@numFound='1']",
-        "/response/result/doc[1]/doc[1]/int[@name='id']='2'" ,
-        "/response/result/doc[1]/doc[2]/int[@name='id']='3'" ,
-        "/response/result/doc[1]/doc[3]/int[@name='id']='4'" ,
-        "/response/result/doc[1]/doc[4]/int[@name='id']='5'" ,
-        "/response/result/doc[1]/doc[5]/int[@name='id']='6'" ,
-        "/response/result/doc[1]/doc[6]/int[@name='id']='7'"};
+        "/response/result/doc[1]/doc[1]/str[@name='id']='2'" ,
+        "/response/result/doc[1]/doc[2]/str[@name='id']='3'" ,
+        "/response/result/doc[1]/doc[3]/str[@name='id']='4'" ,
+        "/response/result/doc[1]/doc[4]/str[@name='id']='5'" ,
+        "/response/result/doc[1]/doc[5]/str[@name='id']='6'" ,
+        "/response/result/doc[1]/doc[6]/str[@name='id']='7'"};
 
     String test2[] = new String[] {
         "//*[@numFound='1']",
-        "/response/result/doc[1]/doc[1]/int[@name='id']='2'" ,
-        "/response/result/doc[1]/doc[2]/int[@name='id']='4'" ,
-        "/response/result/doc[1]/doc[3]/int[@name='id']='6'" };
+        "/response/result/doc[1]/doc[1]/str[@name='id']='2'" ,
+        "/response/result/doc[1]/doc[2]/str[@name='id']='4'" ,
+        "/response/result/doc[1]/doc[3]/str[@name='id']='6'" };
 
     String test3[] = new String[] {
         "//*[@numFound='1']",
-        "/response/result/doc[1]/doc[1]/int[@name='id']='3'" ,
-        "/response/result/doc[1]/doc[2]/int[@name='id']='5'" };
-
-
+        "count(/response/result/doc[1]/doc)=2",
+        "/response/result/doc[1]/doc[1]/str[@name='id']='3'" ,
+        "/response/result/doc[1]/doc[2]/str[@name='id']='5'"};
 
     assertQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
         "fl", "*,[child parentFilter=\"subject:parentDocument\"]"), test1);
 
     assertQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
-        "fl", "subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:foo\"]"), test2);
+        "fl", "id, subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:foo\"]"), test2);
 
     assertQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
-        "fl", "subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:bar\" limit=2]"), test3);
+        "fl", "id, subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:bar\" limit=2]"), test3);
+
+    SolrException e = expectThrows(SolrException.class, () -> {
+      h.query(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+          "fl", "id, subject,[child parentFilter=\"subject:bleh\" childFilter=\"title:bar\" limit=2]"));
+    });
+    assertEquals(SolrException.ErrorCode.BAD_REQUEST.code, e.code());
+    assertThat(e.getMessage(),
+        containsString("Parent filter 'QueryBitSetProducer(subject:bleh)' doesn't match any parent documents"));
+
+    e = expectThrows(SolrException.class, () -> {
+      h.query(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+          "fl", "id, subject,[child parentFilter=e childFilter=\"title:bar\" limit=2]"));
+    });
+    assertEquals(SolrException.ErrorCode.BAD_REQUEST.code, e.code());
+    assertThat(e.getMessage(),
+        containsString("Parent filter 'QueryBitSetProducer(text:e)' doesn't match any parent documents"));
+
+    e = expectThrows(SolrException.class, () -> {
+      h.query(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+          "fl", "id, subject,[child parentFilter=\"\"]"));
+    });
+    assertEquals(SolrException.ErrorCode.BAD_REQUEST.code, e.code());
+    assertThat(e.getMessage(), containsString("Invalid Parent filter '', resolves to null"));
   }
   
   private void testSubQueryXML() {
@@ -100,12 +134,12 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
     final String subqueryPath = "/result[@name='children'][@numFound='6']"; 
     test1 = new String[] {
         "//*[@numFound='1']",
-        "/response/result/doc[1]" + subqueryPath + "/doc[1]/int[@name='id']='2'" ,
-        "/response/result/doc[1]" + subqueryPath + "/doc[2]/int[@name='id']='3'" ,
-        "/response/result/doc[1]" + subqueryPath + "/doc[3]/int[@name='id']='4'" ,
-        "/response/result/doc[1]" + subqueryPath + "/doc[4]/int[@name='id']='5'" ,
-        "/response/result/doc[1]" + subqueryPath + "/doc[5]/int[@name='id']='6'" ,
-        "/response/result/doc[1]" + subqueryPath + "/doc[6]/int[@name='id']='7'"};
+        "/response/result/doc[1]" + subqueryPath + "/doc[1]/str[@name='id']='2'" ,
+        "/response/result/doc[1]" + subqueryPath + "/doc[2]/str[@name='id']='3'" ,
+        "/response/result/doc[1]" + subqueryPath + "/doc[3]/str[@name='id']='4'" ,
+        "/response/result/doc[1]" + subqueryPath + "/doc[4]/str[@name='id']='5'" ,
+        "/response/result/doc[1]" + subqueryPath + "/doc[5]/str[@name='id']='6'" ,
+        "/response/result/doc[1]" + subqueryPath + "/doc[6]/str[@name='id']='7'"};
     }
 
     assertQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
@@ -116,9 +150,9 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
 
     String test2[] = new String[] {
         "//*[@numFound='1']",
-        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[1]/int[@name='id']='2'" ,
-        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[2]/int[@name='id']='4'" ,
-        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[3]/int[@name='id']='6'" };
+        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[1]/str[@name='id']='2'" ,
+        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[2]/str[@name='id']='4'" ,
+        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[3]/str[@name='id']='6'" };
     
     assertQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
         "fl", "*,children:[subquery]",
@@ -130,8 +164,8 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
 
     String test3[] = new String[] {
         "//*[@numFound='1']",
-        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[1]/int[@name='id']='3'" ,
-        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[2]/int[@name='id']='5'" };
+        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[1]/str[@name='id']='3'" ,
+        "/response/result/doc[1]/result[@name='children'][@numFound='3']/doc[2]/str[@name='id']='5'" };
 
     
     assertQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
@@ -145,23 +179,23 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
   
   private void testSubQueryJSON() throws Exception {
     String[] test1 = new String[] {
-        "/response/docs/[0]/children/docs/[0]/id==2",
-        "/response/docs/[0]/children/docs/[1]/id==3",
-        "/response/docs/[0]/children/docs/[2]/id==4",
-        "/response/docs/[0]/children/docs/[3]/id==5",
-        "/response/docs/[0]/children/docs/[4]/id==6",
-        "/response/docs/[0]/children/docs/[5]/id==7"
+        "/response/docs/[0]/children/docs/[0]/id=='2'",
+        "/response/docs/[0]/children/docs/[1]/id=='3'",
+        "/response/docs/[0]/children/docs/[2]/id=='4'",
+        "/response/docs/[0]/children/docs/[3]/id=='5'",
+        "/response/docs/[0]/children/docs/[4]/id=='6'",
+        "/response/docs/[0]/children/docs/[5]/id=='7'"
     };
 
     String[] test2 = new String[] {
-        "/response/docs/[0]/children/docs/[0]/id==2",
-        "/response/docs/[0]/children/docs/[1]/id==4",
-        "/response/docs/[0]/children/docs/[2]/id==6"
+        "/response/docs/[0]/children/docs/[0]/id=='2'",
+        "/response/docs/[0]/children/docs/[1]/id=='4'",
+        "/response/docs/[0]/children/docs/[2]/id=='6'"
     };
 
     String[] test3 = new String[] {
-        "/response/docs/[0]/children/docs/[0]/id==3",
-        "/response/docs/[0]/children/docs/[1]/id==5"
+        "/response/docs/[0]/children/docs/[0]/id=='3'",
+        "/response/docs/[0]/children/docs/[1]/id=='5'"
     };
 
 
@@ -186,34 +220,93 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
 
   private void testChildDoctransformerJSON() throws Exception {
     String[] test1 = new String[] {
-        "/response/docs/[0]/_childDocuments_/[0]/id==2",
-        "/response/docs/[0]/_childDocuments_/[1]/id==3",
-        "/response/docs/[0]/_childDocuments_/[2]/id==4",
-        "/response/docs/[0]/_childDocuments_/[3]/id==5",
-        "/response/docs/[0]/_childDocuments_/[4]/id==6",
-        "/response/docs/[0]/_childDocuments_/[5]/id==7"
+        "/response/docs/[0]/_childDocuments_/[0]/id=='2'",
+        "/response/docs/[0]/_childDocuments_/[1]/id=='3'",
+        "/response/docs/[0]/_childDocuments_/[2]/id=='4'",
+        "/response/docs/[0]/_childDocuments_/[3]/id=='5'",
+        "/response/docs/[0]/_childDocuments_/[4]/id=='6'",
+        "/response/docs/[0]/_childDocuments_/[5]/id=='7'"
     };
 
     String[] test2 = new String[] {
-        "/response/docs/[0]/_childDocuments_/[0]/id==2",
-        "/response/docs/[0]/_childDocuments_/[1]/id==4",
-        "/response/docs/[0]/_childDocuments_/[2]/id==6"
+        "/response/docs/[0]/_childDocuments_/[0]/id=='2'",
+        "/response/docs/[0]/_childDocuments_/[1]/id=='4'",
+        "/response/docs/[0]/_childDocuments_/[2]/id=='6'"
     };
 
     String[] test3 = new String[] {
-        "/response/docs/[0]/_childDocuments_/[0]/id==3",
-        "/response/docs/[0]/_childDocuments_/[1]/id==5"
+        "/response/docs/[0]/_childDocuments_/[0]/id=='3'",
+        "/response/docs/[0]/_childDocuments_/[1]/id=='5'"
     };
-
 
     assertJQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
         "fl", "*,[child parentFilter=\"subject:parentDocument\"]"), test1);
 
     assertJQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
-        "fl", "subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:foo\"]"), test2);
+        "fl", "id, subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:foo\"]"), test2);
 
     assertJQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
-        "fl", "subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:bar\" limit=2]"), test3);
+        "fl", "id, subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:bar\" limit=3]"), test3);
+  }
+
+  private void testChildDocNonStoredDVFields() throws Exception {
+    String[] test1 = new String[] {
+      "/response/docs/[0]/_childDocuments_/[0]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[1]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[2]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[3]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[4]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[5]/intDvoDefault==42"
+    };
+
+    String[] test2 = new String[] {
+      "/response/docs/[0]/_childDocuments_/[0]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[1]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[2]/intDvoDefault==42"
+    };
+
+    String[] test3 = new String[] {
+      "/response/docs/[0]/_childDocuments_/[0]/intDvoDefault==42",
+      "/response/docs/[0]/_childDocuments_/[1]/intDvoDefault==42"
+    };
+
+    assertJQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+        "fl", "*,[child parentFilter=\"subject:parentDocument\"]"), test1);
+
+    assertJQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+        "fl", "intDvoDefault, subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:foo\"]"), test2);
+
+    assertJQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+        "fl", "intDvoDefault, subject,[child parentFilter=\"subject:parentDocument\" childFilter=\"title:bar\" limit=2]"), test3);
+
+  }
+
+  private void testChildReturnFields() throws Exception {
+
+    assertJQ(req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+        "fl", "*,[child parentFilter=\"subject:parentDocument\" fl=\"intDvoDefault,child_fl:[value v='child_fl_test']\"]"),
+        "/response/docs/[0]/intDefault==42",
+        "/response/docs/[0]/_childDocuments_/[0]/intDvoDefault==42",
+        "/response/docs/[0]/_childDocuments_/[0]/child_fl=='child_fl_test'");
+
+    try(SolrQueryRequest req = req("q", "*:*", "fq", "subject:\"parentDocument\" ",
+        "fl", "intDefault,[child parentFilter=\"subject:parentDocument\" fl=\"intDvoDefault, [docid]\"]")) {
+      BasicResultContext res = (BasicResultContext) h.queryAndResponse("/select", req).getResponse();
+      Iterator<SolrDocument> docsStreamer = res.getProcessedDocuments();
+      while (docsStreamer.hasNext()) {
+        SolrDocument doc = docsStreamer.next();
+        assertFalse("root docs should not contain fields specified in child return fields", doc.containsKey("intDvoDefault"));
+        assertTrue("root docs should contain fields specified in query return fields", doc.containsKey("intDefault"));
+        Collection<SolrDocument> childDocs = doc.getChildDocuments();
+        for(SolrDocument childDoc: childDocs) {
+          assertEquals("child doc should only have 2 keys", 2, childDoc.keySet().size());
+          assertTrue("child docs should contain fields specified in child return fields", childDoc.containsKey("intDvoDefault"));
+          assertEquals("child docs should contain fields specified in child return fields",
+              42, childDoc.getFieldValue("intDvoDefault"));
+          assertTrue("child docs should contain fields specified in child return fields", childDoc.containsKey("[docid]"));
+        }
+      }
+    }
   }
 
   private void createSimpleIndex() {
@@ -285,14 +378,14 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
   private void testParentFilterJSON() throws Exception {
 
     String[] tests = new String[] {
-        "/response/docs/[0]/id==1",
-        "/response/docs/[0]/_childDocuments_/[0]/id==2",
-        "/response/docs/[0]/_childDocuments_/[0]/cat/[0]/=='childDocument'",
-        "/response/docs/[0]/_childDocuments_/[0]/title/[0]/=='" + titleVals[0] + "'",
-        "/response/docs/[1]/id==4",
-        "/response/docs/[1]/_childDocuments_/[0]/id==5",
-        "/response/docs/[1]/_childDocuments_/[0]/cat/[0]/=='childDocument'",
-        "/response/docs/[1]/_childDocuments_/[0]/title/[0]/=='" + titleVals[1] + "'"
+        "/response/docs/[0]/id=='1'",
+        "/response/docs/[0]/_childDocuments_/[0]/id=='2'",
+        "/response/docs/[0]/_childDocuments_/[0]/cat=='childDocument'",
+        "/response/docs/[0]/_childDocuments_/[0]/title=='" + titleVals[0] + "'",
+        "/response/docs/[1]/id=='4'",
+        "/response/docs/[1]/_childDocuments_/[0]/id=='5'",
+        "/response/docs/[1]/_childDocuments_/[0]/cat=='childDocument'",
+        "/response/docs/[1]/_childDocuments_/[0]/title=='" + titleVals[1] + "'"
     };
 
 
@@ -305,7 +398,7 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
     assertJQ(req("q", "*:*", 
                  "sort", "id asc",
                  "fq", "subject:\"parentDocument\" ",
-                 "fl", "id,[child childFilter='cat:childDocument' parentFilter=\"subject:parentDocument\"]"), 
+                 "fl", "id, cat, title, [child childFilter='cat:childDocument' parentFilter=\"subject:parentDocument\"]"),
              tests);
 
   }
@@ -313,14 +406,14 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
   private void testSubQueryParentFilterJSON() throws Exception {
 
     String[] tests = new String[] {
-        "/response/docs/[0]/id==1",
-        "/response/docs/[0]/children/docs/[0]/id==2",
-        "/response/docs/[0]/children/docs/[0]/cat/[0]/=='childDocument'",
-        "/response/docs/[0]/children/docs/[0]/title/[0]/=='" + titleVals[0] + "'",
-        "/response/docs/[1]/id==4",
-        "/response/docs/[1]/children/docs/[0]/id==5",
-        "/response/docs/[1]/children/docs/[0]/cat/[0]/=='childDocument'",
-        "/response/docs/[1]/children/docs/[0]/title/[0]/=='" + titleVals[1] + "'"
+        "/response/docs/[0]/id=='1'",
+        "/response/docs/[0]/children/docs/[0]/id=='2'",
+        "/response/docs/[0]/children/docs/[0]/cat=='childDocument'",
+        "/response/docs/[0]/children/docs/[0]/title=='" + titleVals[0] + "'",
+        "/response/docs/[1]/id=='4'",
+        "/response/docs/[1]/children/docs/[0]/id=='5'",
+        "/response/docs/[1]/children/docs/[0]/cat=='childDocument'",
+        "/response/docs/[1]/children/docs/[0]/title=='" + titleVals[1] + "'"
     };
 
 
@@ -346,14 +439,14 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
 
     String tests[] = new String[] {
         "//*[@numFound='2']",
-        "/response/result/doc[1]/int[@name='id']='1'" ,
-        "/response/result/doc[1]/doc[1]/int[@name='id']='2'" ,
-        "/response/result/doc[1]/doc[1]/arr[@name='cat']/str[1]='childDocument'" ,
-        "/response/result/doc[1]/doc[1]/arr[@name='title']/str[1]='" + titleVals[0] + "'" ,
-        "/response/result/doc[2]/int[@name='id']='4'" ,
-        "/response/result/doc[2]/doc[1]/int[@name='id']='5'",
-        "/response/result/doc[2]/doc[1]/arr[@name='cat']/str[1]='childDocument'",
-        "/response/result/doc[2]/doc[1]/arr[@name='title']/str[1]='" + titleVals[1] + "'"};
+        "/response/result/doc[1]/str[@name='id']='1'" ,
+        "/response/result/doc[1]/doc[1]/str[@name='id']='2'" ,
+        "/response/result/doc[1]/doc[1]/str[@name='cat']='childDocument'" ,
+        "/response/result/doc[1]/doc[1]/str[@name='title']='" + titleVals[0] + "'" ,
+        "/response/result/doc[2]/str[@name='id']='4'" ,
+        "/response/result/doc[2]/doc[1]/str[@name='id']='5'",
+        "/response/result/doc[2]/doc[1]/str[@name='cat']='childDocument'",
+        "/response/result/doc[2]/doc[1]/str[@name='title']='" + titleVals[1] + "'"};
 
     assertQ(req("q", "*:*", 
                 "sort", "id asc",
@@ -364,7 +457,7 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
     assertQ(req("q", "*:*", 
                 "sort", "id asc",
                 "fq", "subject:\"parentDocument\" ",
-                "fl", "id,[child childFilter='cat:childDocument' parentFilter=\"subject:parentDocument\"]"), 
+                "fl", "id, cat, title, [child childFilter='cat:childDocument' parentFilter=\"subject:parentDocument\"]"),
             tests);
   }
 
@@ -372,14 +465,14 @@ public class TestChildDocTransformer extends SolrTestCaseJ4 {
 
     String tests[] = new String[] {
         "//*[@numFound='2']",
-        "/response/result/doc[1]/int[@name='id']='1'" ,
-        "/response/result/doc[1]/result[@name='children'][@numFound=1]/doc[1]/int[@name='id']='2'" ,
-        "/response/result/doc[1]/result[@name='children'][@numFound=1]/doc[1]/arr[@name='cat']/str[1]='childDocument'" ,
-        "/response/result/doc[1]/result[@name='children'][@numFound=1]/doc[1]/arr[@name='title']/str[1]='" + titleVals[0] + "'" ,
-        "/response/result/doc[2]/int[@name='id']='4'" ,
-        "/response/result/doc[2]/result[@name='children'][@numFound=1]/doc[1]/int[@name='id']='5'",
-        "/response/result/doc[2]/result[@name='children'][@numFound=1]/doc[1]/arr[@name='cat']/str[1]='childDocument'",
-        "/response/result/doc[2]/result[@name='children'][@numFound=1]/doc[1]/arr[@name='title']/str[1]='" + titleVals[1] + "'"};
+        "/response/result/doc[1]/str[@name='id']='1'" ,
+        "/response/result/doc[1]/result[@name='children'][@numFound=1]/doc[1]/str[@name='id']='2'" ,
+        "/response/result/doc[1]/result[@name='children'][@numFound=1]/doc[1]/str[@name='cat']='childDocument'" ,
+        "/response/result/doc[1]/result[@name='children'][@numFound=1]/doc[1]/str[@name='title']='" + titleVals[0] + "'" ,
+        "/response/result/doc[2]/str[@name='id']='4'" ,
+        "/response/result/doc[2]/result[@name='children'][@numFound=1]/doc[1]/str[@name='id']='5'",
+        "/response/result/doc[2]/result[@name='children'][@numFound=1]/doc[1]/str[@name='cat']='childDocument'",
+        "/response/result/doc[2]/result[@name='children'][@numFound=1]/doc[1]/str[@name='title']='" + titleVals[1] + "'"};
 
     assertQ(req(
         "q", "*:*", "fq", "subject:\"parentDocument\" ",

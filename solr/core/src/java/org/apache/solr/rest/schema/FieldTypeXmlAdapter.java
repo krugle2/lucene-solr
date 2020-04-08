@@ -25,7 +25,9 @@ import javax.xml.parsers.ParserConfigurationException;
 
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
+import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.schema.IndexSchema;
+import org.apache.solr.schema.SimilarityFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -83,8 +85,29 @@ public class FieldTypeXmlAdapter {
           jsonFieldName+" not a "+jsonField.getClass().getName());
 
     Element similarity = doc.createElement("similarity");
-    appendAttrs(similarity, (Map<String,?>)jsonField);
+    Map<String,?> config = (Map<String,?>)jsonField;
+    similarity.setAttribute(SimilarityFactory.CLASS_NAME, (String)config.remove(SimilarityFactory.CLASS_NAME));
+    for (Map.Entry<String,?> entry : config.entrySet()) {
+      Object val = entry.getValue();
+      if (val != null) {
+        Element child = doc.createElement(classToXmlTag(val.getClass()));
+        child.setAttribute(CommonParams.NAME, entry.getKey());
+        child.setTextContent(entry.getValue().toString());
+        similarity.appendChild(child);
+      }
+    }
     return similarity;
+  }
+
+  /** Convert types produced by noggit's ObjectBuilder (Boolean, Double, Long, String) to plugin param XML tags. */
+  protected static String classToXmlTag(Class<?> clazz) {
+    switch (clazz.getSimpleName()) {
+      case "Boolean": return "bool";
+      case "Double":  return "double";
+      case "Long":    return "long";
+      case "String":  return "str";
+    }
+    throw new SolrException(ErrorCode.BAD_REQUEST, "Unsupported object type '" + clazz.getSimpleName() + "'");
   }
   
   @SuppressWarnings("unchecked")
@@ -117,8 +140,8 @@ public class FieldTypeXmlAdapter {
       if (tokenizer == null)
         throw new SolrException(ErrorCode.BAD_REQUEST, "Analyzer must define a tokenizer!");
 
-      if (tokenizer.get("class") == null)
-        throw new SolrException(ErrorCode.BAD_REQUEST, "Every tokenizer must define a class property!");
+      if (tokenizer.get("class") == null && tokenizer.get("name") == null)
+        throw new SolrException(ErrorCode.BAD_REQUEST, "Every tokenizer must define a class or name property!");
 
       analyzerElem.appendChild(appendAttrs(doc.createElement("tokenizer"), tokenizer));
 
@@ -145,9 +168,10 @@ public class FieldTypeXmlAdapter {
   protected static void appendFilterElements(Document doc, Element analyzer, String filterName, List<Map<String,?>> filters) {
     for (Map<String,?> next : filters) {
       String filterClass = (String)next.get("class");
-      if (filterClass == null)
+      String filterSPIName = (String)next.get("name");
+      if (filterClass == null && filterSPIName == null)
         throw new SolrException(ErrorCode.BAD_REQUEST, 
-            "Every "+filterName+" must define a class property!");      
+            "Every "+filterName+" must define a class or name property!");
       analyzer.appendChild(appendAttrs(doc.createElement(filterName), next));
     }    
   }

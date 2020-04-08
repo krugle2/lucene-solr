@@ -27,7 +27,9 @@ import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Rescorer;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
 import org.apache.solr.search.SolrIndexSearcher;
 
@@ -99,7 +101,7 @@ public class LTRRescorer extends Rescorer {
   @Override
   public TopDocs rescore(IndexSearcher searcher, TopDocs firstPassTopDocs,
       int topN) throws IOException {
-    if ((topN == 0) || (firstPassTopDocs.totalHits == 0)) {
+    if ((topN == 0) || (firstPassTopDocs.scoreDocs.length == 0)) {
       return firstPassTopDocs;
     }
     final ScoreDoc[] hits = firstPassTopDocs.scoreDocs;
@@ -110,14 +112,14 @@ public class LTRRescorer extends Rescorer {
       }
     });
 
-    topN = Math.min(topN, firstPassTopDocs.totalHits);
+    assert firstPassTopDocs.totalHits.relation == TotalHits.Relation.EQUAL_TO;
+    topN = Math.toIntExact(Math.min(topN, firstPassTopDocs.totalHits.value));
     final ScoreDoc[] reranked = new ScoreDoc[topN];
     final List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
     final LTRScoringQuery.ModelWeight modelWeight = (LTRScoringQuery.ModelWeight) searcher
-        .createNormalizedWeight(scoringQuery, true);
+        .createWeight(searcher.rewrite(scoringQuery), ScoreMode.COMPLETE, 1);
 
-    final SolrIndexSearcher solrIndexSearch = (SolrIndexSearcher) searcher;
-    scoreFeatures(solrIndexSearch, firstPassTopDocs,topN, modelWeight, hits, leaves, reranked);
+    scoreFeatures(searcher, firstPassTopDocs,topN, modelWeight, hits, leaves, reranked);
     // Must sort all documents that we reranked, and then select the top
     Arrays.sort(reranked, new Comparator<ScoreDoc>() {
       @Override
@@ -135,10 +137,10 @@ public class LTRRescorer extends Rescorer {
       }
     });
 
-    return new TopDocs(firstPassTopDocs.totalHits, reranked, reranked[0].score);
+    return new TopDocs(firstPassTopDocs.totalHits, reranked);
   }
 
-  public void scoreFeatures(SolrIndexSearcher solrIndexSearch, TopDocs firstPassTopDocs,
+  public void scoreFeatures(IndexSearcher indexSearcher, TopDocs firstPassTopDocs,
       int topN, LTRScoringQuery.ModelWeight modelWeight, ScoreDoc[] hits, List<LeafReaderContext> leaves,
       ScoreDoc[] reranked) throws IOException {
 
@@ -177,14 +179,14 @@ public class LTRRescorer extends Rescorer {
       scorer.docID();
       scorer.iterator().advance(targetDoc);
 
-      scorer.getDocInfo().setOriginalDocScore(new Float(hit.score));
+      scorer.getDocInfo().setOriginalDocScore(hit.score);
       hit.score = scorer.score();
       if (hitUpto < topN) {
         reranked[hitUpto] = hit;
         // if the heap is not full, maybe I want to log the features for this
         // document
-        if (featureLogger != null) {
-          featureLogger.log(hit.doc, scoringQuery, solrIndexSearch,
+        if (featureLogger != null && indexSearcher instanceof SolrIndexSearcher) {
+          featureLogger.log(hit.doc, scoringQuery, (SolrIndexSearcher)indexSearcher,
               modelWeight.getFeaturesInfo());
         }
       } else if (hitUpto == topN) {
@@ -200,8 +202,8 @@ public class LTRRescorer extends Rescorer {
         if (hit.score > reranked[0].score) {
           reranked[0] = hit;
           heapAdjust(reranked, topN, 0);
-          if (featureLogger != null) {
-            featureLogger.log(hit.doc, scoringQuery, solrIndexSearch,
+          if (featureLogger != null && indexSearcher instanceof SolrIndexSearcher) {
+            featureLogger.log(hit.doc, scoringQuery, (SolrIndexSearcher)indexSearcher,
                 modelWeight.getFeaturesInfo());
           }
         }
@@ -219,8 +221,8 @@ public class LTRRescorer extends Rescorer {
     final int n = ReaderUtil.subIndex(docID, leafContexts);
     final LeafReaderContext context = leafContexts.get(n);
     final int deBasedDoc = docID - context.docBase;
-    final Weight modelWeight = searcher.createNormalizedWeight(scoringQuery,
-        true);
+    final Weight modelWeight = searcher.createWeight(searcher.rewrite(scoringQuery),
+        ScoreMode.COMPLETE, 1);
     return modelWeight.explain(context, deBasedDoc);
   }
 

@@ -19,15 +19,12 @@ package org.apache.solr.spelling;
 import java.util.Collection;
 import java.util.Map;
 
-import org.apache.lucene.analysis.Token;
 import org.apache.lucene.util.LuceneTestCase.SuppressTempFileChecks;
 import org.apache.solr.SolrTestCaseJ4;
 import org.apache.solr.common.params.SpellingParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.handler.component.SpellCheckComponent;
-import org.apache.solr.search.SolrIndexSearcher;
-import org.apache.solr.util.RefCounted;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -64,32 +61,78 @@ public class DirectSolrSpellCheckerTest extends SolrTestCaseJ4 {
     SolrCore core = h.getCore();
     checker.init(spellchecker, core);
 
-    RefCounted<SolrIndexSearcher> searcher = core.getSearcher();
-    Collection<Token> tokens = queryConverter.convert("fob");
-    SpellingOptions spellOpts = new SpellingOptions(tokens, searcher.get().getIndexReader());
-    SpellingResult result = checker.getSuggestions(spellOpts);
-    assertTrue("result is null and it shouldn't be", result != null);
-    Map<String, Integer> suggestions = result.get(tokens.iterator().next());
-    Map.Entry<String, Integer> entry = suggestions.entrySet().iterator().next();
-    assertTrue(entry.getKey() + " is not equal to " + "foo", entry.getKey().equals("foo") == true);
-    assertFalse(entry.getValue() + " equals: " + SpellingResult.NO_FREQUENCY_INFO, entry.getValue() == SpellingResult.NO_FREQUENCY_INFO);
+    h.getCore().withSearcher(searcher -> {
 
-    spellOpts.tokens = queryConverter.convert("super");
-    result = checker.getSuggestions(spellOpts);
-    assertTrue("result is null and it shouldn't be", result != null);
-    suggestions = result.get(tokens.iterator().next());
-    assertTrue("suggestions is not null and it should be", suggestions == null);
-    searcher.decref();
+      // check that 'fob' is corrected to 'foo'
+      Collection<Token> tokens = queryConverter.convert("fob");
+      SpellingOptions spellOpts = new SpellingOptions(tokens, searcher.getIndexReader());
+      SpellingResult result = checker.getSuggestions(spellOpts);
+      assertNotNull("result shouldn't be null", result);
+      Map<String, Integer> suggestions = result.get(tokens.iterator().next());
+      assertFalse("suggestions shouldn't be empty", suggestions.isEmpty());
+      Map.Entry<String, Integer> entry = suggestions.entrySet().iterator().next();
+      assertEquals("foo", entry.getKey());
+      assertFalse(entry.getValue() + " equals: " + SpellingResult.NO_FREQUENCY_INFO, entry.getValue() == SpellingResult.NO_FREQUENCY_INFO);
+
+      // check that 'super' is *not* corrected
+      spellOpts.tokens = queryConverter.convert("super");
+      result = checker.getSuggestions(spellOpts);
+      assertNotNull("result shouldn't be null", result);
+      suggestions = result.get(spellOpts.tokens.iterator().next());
+      assertNotNull("suggestions shouldn't be null", suggestions);
+      assertTrue("suggestions should be empty", suggestions.isEmpty());
+      return null;
+    });
   }
   
   @Test
   public void testOnlyMorePopularWithExtendedResults() throws Exception {
-    assertQ(req("q", "teststop:fox", "qt", "spellCheckCompRH", SpellCheckComponent.COMPONENT_NAME, "true", SpellingParams.SPELLCHECK_DICT, "direct", SpellingParams.SPELLCHECK_EXTENDED_RESULTS, "true", SpellingParams.SPELLCHECK_ONLY_MORE_POPULAR, "true"),
+    assertQ(req("q", "teststop:fox", "qt", "/spellCheckCompRH", SpellCheckComponent.COMPONENT_NAME, "true", SpellingParams.SPELLCHECK_DICT, "direct", SpellingParams.SPELLCHECK_EXTENDED_RESULTS, "true", SpellingParams.SPELLCHECK_ONLY_MORE_POPULAR, "true"),
         "//lst[@name='spellcheck']/lst[@name='suggestions']/lst[@name='fox']/int[@name='origFreq']=1",
         "//lst[@name='spellcheck']/lst[@name='suggestions']/lst[@name='fox']/arr[@name='suggestion']/lst/str[@name='word']='foo'",
         "//lst[@name='spellcheck']/lst[@name='suggestions']/lst[@name='fox']/arr[@name='suggestion']/lst/int[@name='freq']=2",
         "//lst[@name='spellcheck']/bool[@name='correctlySpelled']='true'"
     );
-  }  
+  }
+
+  @Test
+  public void testMaxQueryLength() throws Exception {
+    testMaxQueryLength(true);
+    testMaxQueryLength(false);
+  }
+
+  private void testMaxQueryLength(Boolean limitQueryLength) throws Exception {
+
+    DirectSolrSpellChecker checker = new DirectSolrSpellChecker();
+    NamedList<Object> spellchecker = new NamedList<>();
+    spellchecker.add("classname", DirectSolrSpellChecker.class.getName());
+    spellchecker.add(SolrSpellChecker.FIELD, "teststop");
+    spellchecker.add(DirectSolrSpellChecker.MINQUERYLENGTH, 2);
+
+    // demonstrate that "anothar" is not corrected when maxQueryLength is set to a small number
+    if (limitQueryLength) spellchecker.add(DirectSolrSpellChecker.MAXQUERYLENGTH, 4);
+
+    SolrCore core = h.getCore();
+    checker.init(spellchecker, core);
+
+    h.getCore().withSearcher(searcher -> {
+      Collection<Token> tokens = queryConverter.convert("anothar");
+      SpellingOptions spellOpts = new SpellingOptions(tokens, searcher.getIndexReader());
+      SpellingResult result = checker.getSuggestions(spellOpts);
+      assertNotNull("result shouldn't be null", result);
+      Map<String, Integer> suggestions = result.get(tokens.iterator().next());
+      assertNotNull("suggestions shouldn't be null", suggestions);
+
+      if (limitQueryLength) {
+        assertTrue("suggestions should be empty", suggestions.isEmpty());
+      } else {
+        assertFalse("suggestions shouldn't be empty", suggestions.isEmpty());
+        Map.Entry<String, Integer> entry = suggestions.entrySet().iterator().next();
+        assertEquals("another", entry.getKey());
+      }
+
+      return null;
+    });
+  }
   
 }

@@ -29,7 +29,6 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.Fields;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.IndexReader;
@@ -106,7 +105,7 @@ public class TermInSetQueryTest extends LuceneTestCase {
     final int maxDoc = searcher.getIndexReader().maxDoc();
     final TopDocs td1 = searcher.search(q1, maxDoc, scores ? Sort.RELEVANCE : Sort.INDEXORDER);
     final TopDocs td2 = searcher.search(q2, maxDoc, scores ? Sort.RELEVANCE : Sort.INDEXORDER);
-    assertEquals(td1.totalHits, td2.totalHits);
+    assertEquals(td1.totalHits.value, td2.totalHits.value);
     for (int i = 0; i < td1.scoreDocs.length; ++i) {
       assertEquals(td1.scoreDocs[i].doc, td2.scoreDocs[i].doc);
       if (scores) {
@@ -158,7 +157,7 @@ public class TermInSetQueryTest extends LuceneTestCase {
   public void testToString() {
     TermInSetQuery termsQuery = new TermInSetQuery("field1",
         new BytesRef("a"), new BytesRef("b"), new BytesRef("c"));
-    assertEquals("field1:a field1:b field1:c", termsQuery.toString());
+    assertEquals("field1:(a b c)", termsQuery.toString());
   }
 
   public void testDedup() {
@@ -176,7 +175,7 @@ public class TermInSetQueryTest extends LuceneTestCase {
 
   public void testRamBytesUsed() {
     List<BytesRef> terms = new ArrayList<>();
-    final int numTerms = 1000 + random().nextInt(1000);
+    final int numTerms = 10000 + random().nextInt(1000);
     for (int i = 0; i < numTerms; ++i) {
       terms.add(new BytesRef(RandomStrings.randomUnicodeOfLength(random(), 10)));
     }
@@ -184,7 +183,7 @@ public class TermInSetQueryTest extends LuceneTestCase {
     final long actualRamBytesUsed = RamUsageTester.sizeOf(query);
     final long expectedRamBytesUsed = query.ramBytesUsed();
     // error margin within 5%
-    assertEquals(actualRamBytesUsed, expectedRamBytesUsed, actualRamBytesUsed / 20);
+    assertEquals(expectedRamBytesUsed, actualRamBytesUsed, actualRamBytesUsed / 20);
   }
 
   private static class TermsCountingDirectoryReaderWrapper extends FilterDirectoryReader {
@@ -219,21 +218,16 @@ public class TermInSetQueryTest extends LuceneTestCase {
       }
 
       @Override
-      public Fields fields() throws IOException {
-        return new FilterFields(in.fields()) {
+      public Terms terms(String field) throws IOException {
+        Terms terms = super.terms(field);
+        if (terms == null) {
+          return null;
+        }
+        return new FilterTerms(terms) {
           @Override
-          public Terms terms(String field) throws IOException {
-            final Terms in = this.in.terms(field);
-            if (in == null) {
-              return null;
-            }
-            return new FilterTerms(in) {
-              @Override
-              public TermsEnum iterator() throws IOException {
-                counter.incrementAndGet();
-                return super.iterator();
-              }
-            };
+          public TermsEnum iterator() throws IOException {
+            counter.incrementAndGet();
+            return super.iterator();
           }
         };
       }
@@ -291,7 +285,7 @@ public class TermInSetQueryTest extends LuceneTestCase {
   
   public void testBinaryToString() {
     TermInSetQuery query = new TermInSetQuery("field", new BytesRef(new byte[] { (byte) 0xff, (byte) 0xfe }));
-    assertEquals("field:[ff fe]", query.toString());
+    assertEquals("field:([ff fe])", query.toString());
   }
 
   public void testIsConsideredCostlyByQueryCache() throws IOException {

@@ -19,6 +19,7 @@ package org.apache.lucene.index;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.Set;
 
 import org.apache.lucene.util.FilterIterator;
@@ -76,8 +77,8 @@ public final class FieldFilterLeafReader extends FilterLeafReader {
       }
 
       @Override
-      public void stringField(FieldInfo fieldInfo, byte[] value) throws IOException {
-        visitor.stringField(fieldInfo, value);
+      public void stringField(FieldInfo fieldInfo, String value) throws IOException {
+        visitor.stringField(fieldInfo, Objects.requireNonNull(value, "String value should not be null"));
       }
 
       @Override
@@ -108,11 +109,10 @@ public final class FieldFilterLeafReader extends FilterLeafReader {
   }
 
   @Override
-  public Fields fields() throws IOException {
-    final Fields f = super.fields();
-    return (f == null) ? null : new FieldFilterFields(f);
+  public Terms terms(String field) throws IOException {
+    return hasField(field) ? super.terms(field) : null;
   }
-  
+
   @Override
   public BinaryDocValues getBinaryDocValues(String field) throws IOException {
     return hasField(field) ? super.getBinaryDocValues(field) : null;
@@ -145,7 +145,7 @@ public final class FieldFilterLeafReader extends FilterLeafReader {
     if (negate) sb.append('!');
     return sb.append(fields).append(')').toString();
   }
-  
+
   private class FieldFilterFields extends FilterFields {
 
     public FieldFilterFields(Fields in) {

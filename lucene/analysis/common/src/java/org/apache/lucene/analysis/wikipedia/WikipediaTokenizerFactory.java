@@ -16,9 +16,9 @@
  */
 package org.apache.lucene.analysis.wikipedia;
 
-
 import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.lucene.analysis.util.TokenizerFactory;
 import org.apache.lucene.util.AttributeFactory;
@@ -31,21 +31,42 @@ import org.apache.lucene.util.AttributeFactory;
  *     &lt;tokenizer class="solr.WikipediaTokenizerFactory"/&gt;
  *   &lt;/analyzer&gt;
  * &lt;/fieldType&gt;</pre>
+ *
+ * @since 3.1
+ * @lucene.spi {@value #NAME}
  */
 public class WikipediaTokenizerFactory extends TokenizerFactory {
-  
+
+  /** SPI name */
+  public static final String NAME = "wikipedia";
+
+  public static final String TOKEN_OUTPUT = "tokenOutput";
+  public static final String UNTOKENIZED_TYPES = "untokenizedTypes";
+
+  protected final int tokenOutput;
+  protected Set<String> untokenizedTypes;
+
   /** Creates a new WikipediaTokenizerFactory */
   public WikipediaTokenizerFactory(Map<String,String> args) {
     super(args);
+    tokenOutput = getInt(args, TOKEN_OUTPUT, WikipediaTokenizer.TOKENS_ONLY);
+    untokenizedTypes = getSet(args, UNTOKENIZED_TYPES);
+
+    if (untokenizedTypes == null) {
+      untokenizedTypes = Collections.emptySet();
+    }
     if (!args.isEmpty()) {
       throw new IllegalArgumentException("Unknown parameters: " + args);
     }
   }
-  
-  // TODO: add support for WikipediaTokenizer's advanced options.
+
+  /** Default ctor for compatibility with SPI */
+  public WikipediaTokenizerFactory() {
+    throw defaultCtorException();
+  }
+
   @Override
   public WikipediaTokenizer create(AttributeFactory factory) {
-    return new WikipediaTokenizer(factory, WikipediaTokenizer.TOKENS_ONLY,
-        Collections.<String>emptySet());
+    return new WikipediaTokenizer(factory, tokenOutput, untokenizedTypes);
   }
 }

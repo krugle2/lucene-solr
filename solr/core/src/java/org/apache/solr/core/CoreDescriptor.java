@@ -24,7 +24,6 @@ import java.lang.invoke.MethodHandles;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -32,15 +31,19 @@ import java.util.Properties;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.solr.cloud.CloudDescriptor;
+import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.util.PropertiesUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A Solr core descriptor
+ * Metadata about a {@link SolrCore}.
+ * It's mostly loaded from a file on disk at the very beginning of loading a core.
+ *
+ * It's mostly but not completely immutable; we should fix this!
  *
  * @since solr 1.3
  */
@@ -64,6 +67,14 @@ public class CoreDescriptor {
   public static final String SOLR_CORE_PROP_PREFIX = "solr.core.";
 
   public static final String DEFAULT_EXTERNAL_PROPERTIES_FILE = "conf" + File.separator + "solrcore.properties";
+
+  /**
+   * Whether this core was configured using a configSet that was trusted.
+   * This helps in avoiding the loading of plugins that have potential
+   * vulnerabilities, when the configSet was not uploaded from a trusted
+   * user.
+   */
+  private boolean trustedConfigSet = true;
 
   /**
    * Get the standard properties in persistable form
@@ -113,8 +124,6 @@ public class CoreDescriptor {
       CloudDescriptor.NUM_SHARDS
   );
 
-  private final CoreContainer coreContainer;
-
   private final CloudDescriptor cloudDesc;
 
   private final Path instanceDir;
@@ -131,8 +140,9 @@ public class CoreDescriptor {
   /** The properties for this core, substitutable by resource loaders */
   protected final Properties substitutableProperties = new Properties();
 
-  public CoreDescriptor(CoreContainer container, String name, Path instanceDir, String... properties) {
-    this(container, name, instanceDir, toMap(properties));
+  /** TESTS ONLY */
+  public CoreDescriptor(String name, Path instanceDir, CoreContainer coreContainer, String... coreProps) {
+    this(name, instanceDir, toMap(coreProps), coreContainer.getContainerProperties(), coreContainer.getZkController());
   }
 
   private static Map<String, String> toMap(String... properties) {
@@ -145,22 +155,11 @@ public class CoreDescriptor {
   }
 
   /**
-   * Create a new CoreDescriptor with a given name and instancedir
-   * @param container     the CoreDescriptor's container
-   * @param name          the CoreDescriptor's name
-   * @param instanceDir   the CoreDescriptor's instancedir
-   */
-  public CoreDescriptor(CoreContainer container, String name, Path instanceDir) {
-    this(container, name, instanceDir, Collections.emptyMap());
-  }
-
-  /**
    * Create a new CoreDescriptor using the properties of an existing one
    * @param coreName the new CoreDescriptor's name
    * @param other    the CoreDescriptor to copy
    */
   public CoreDescriptor(String coreName, CoreDescriptor other) {
-    this.coreContainer = other.coreContainer;
     this.cloudDesc = other.cloudDesc;
     this.instanceDir = other.instanceDir;
     this.originalExtraProperties.putAll(other.originalExtraProperties);
@@ -170,33 +169,32 @@ public class CoreDescriptor {
     this.coreProperties.setProperty(CORE_NAME, coreName);
     this.originalCoreProperties.setProperty(CORE_NAME, coreName);
     this.substitutableProperties.setProperty(SOLR_CORE_PROP_PREFIX + CORE_NAME, coreName);
+    this.trustedConfigSet = other.trustedConfigSet;
   }
 
   /**
    * Create a new CoreDescriptor.
-   * @param container       the CoreDescriptor's container
    * @param name            the CoreDescriptor's name
    * @param instanceDir     a Path resolving to the instanceDir
    * @param coreProps       a Map of the properties for this core
+   * @param containerProperties the properties from the enclosing container.
+   * @param zkController    the ZkController in SolrCloud mode, otherwise null.
    */
-  public CoreDescriptor(CoreContainer container, String name, Path instanceDir,
-                        Map<String, String> coreProps) {
-
-    this.coreContainer = container;
+  public CoreDescriptor(String name, Path instanceDir, Map<String, String> coreProps,
+                        Properties containerProperties, ZkController zkController) {
     this.instanceDir = instanceDir;
 
     originalCoreProperties.setProperty(CORE_NAME, name);
 
-    Properties containerProperties = container.getContainerProperties();
     name = PropertiesUtil.substituteProperty(checkPropertyIsNotEmpty(name, CORE_NAME),
                                              containerProperties);
 
     coreProperties.putAll(defaultProperties);
     coreProperties.put(CORE_NAME, name);
 
-    for (String propname : coreProps.keySet()) {
-
-      String propvalue = coreProps.get(propname);
+    for (Map.Entry<String, String> entry : coreProps.entrySet()) {
+      String propname = entry.getKey();
+      String propvalue = entry.getValue();
 
       if (isUserDefinedProperty(propname))
         originalExtraProperties.put(propname, propvalue);
@@ -212,14 +210,12 @@ public class CoreDescriptor {
     buildSubstitutableProperties();
 
     // TODO maybe make this a CloudCoreDescriptor subclass?
-    if (container.isZooKeeperAware()) {
-      cloudDesc = new CloudDescriptor(name, coreProperties, this);
-    }
-    else {
+    if (zkController != null) {
+      cloudDesc = new CloudDescriptor(this, name, coreProperties);
+    } else {
       cloudDesc = null;
     }
-
-    log.debug("Created CoreDescriptor: " + coreProperties);
+    log.debug("Created CoreDescriptor: {}", coreProperties);
   }
 
   /**
@@ -306,7 +302,7 @@ public class CoreDescriptor {
     return coreProperties.getProperty(CORE_CONFIG);
   }
 
-  /**@return the core schema resource name. */
+  /**@return the core schema resource name.  Not actually used if schema is managed mode. */
   public String getSchemaName() {
     return coreProperties.getProperty(CORE_SCHEMA);
   }
@@ -316,12 +312,17 @@ public class CoreDescriptor {
     return coreProperties.getProperty(CORE_NAME);
   }
 
-  public String getCollectionName() {
-    return cloudDesc == null ? null : cloudDesc.getCollectionName();
+  /** TODO remove mutability */
+  void setProperty(String prop, String val) {
+    if (substitutableProperties.containsKey(prop)) {
+      substitutableProperties.setProperty(prop, val);
+      return;
+    }
+    coreProperties.setProperty(prop, val);
   }
 
-  public CoreContainer getCoreContainer() {
-    return coreContainer;
+  public String getCollectionName() {
+    return cloudDesc == null ? null : cloudDesc.getCollectionName();
   }
 
   public CloudDescriptor getCloudDescriptor() {
@@ -366,10 +367,25 @@ public class CoreDescriptor {
   }
 
   public String getConfigSet() {
+    //TODO consider falling back on "collection.configName" ( CollectionAdminParams.COLL_CONF )
     return coreProperties.getProperty(CORE_CONFIGSET);
+  }
+
+  /** TODO remove mutability or at least make this non-public? */
+  public void setConfigSet(String configSetName) {
+    coreProperties.setProperty(CORE_CONFIGSET, configSetName);
   }
 
   public String getConfigSetPropertiesName() {
     return coreProperties.getProperty(CORE_CONFIGSET_PROPERTIES);
+  }
+
+  public boolean isConfigSetTrusted() {
+    return trustedConfigSet;
+  }
+
+  /** TODO remove mutability */
+  public void setConfigSetTrusted(boolean trusted) {
+    this.trustedConfigSet = trusted;
   }
 }

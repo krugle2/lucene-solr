@@ -21,7 +21,6 @@ import java.util.Iterator;
 import java.util.List;
 
 import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.Fields;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
@@ -84,7 +83,7 @@ public class DocSetUtil {
         searcher.setLiveDocs( collector.getDocSet() );
       }
       try {
-        return searcher.getLiveDocs();
+        return searcher.getLiveDocSet();
       } catch (IOException e) {
         // should be impossible... liveDocs should exist, so no IO should be necessary
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
@@ -107,7 +106,7 @@ public class DocSetUtil {
       try {
         // if this docset has the same cardinality as liveDocs, return liveDocs instead
         // so this set will be short lived garbage.
-        return searcher.getLiveDocs();
+        return searcher.getLiveDocSet();
       } catch (IOException e) {
         // should be impossible... liveDocs should exist, so no IO should be necessary
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
@@ -169,8 +168,7 @@ public class DocSetUtil {
     for (LeafReaderContext ctx : leaves) {
       assert leaves.get(ctx.ord) == ctx;
       LeafReader r = ctx.reader();
-      Fields f = r.fields();
-      Terms t = f.terms(field);
+      Terms t = r.terms(field);
       if (t == null) continue;  // field is missing
       TermsEnum te = t.iterator();
       if (te.seekExact(termVal)) {
@@ -182,7 +180,7 @@ public class DocSetUtil {
 
     DocSet answer = null;
     if (maxCount == 0) {
-      answer = DocSet.EMPTY;
+      answer = DocSet.empty();
     } else if (maxCount <= smallSetSize) {
       answer = createSmallSet(leaves, postList, maxCount, firstReader);
     } else {

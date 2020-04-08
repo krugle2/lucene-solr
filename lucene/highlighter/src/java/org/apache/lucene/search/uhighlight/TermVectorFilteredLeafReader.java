@@ -18,7 +18,6 @@ package org.apache.lucene.search.uhighlight;
 
 import java.io.IOException;
 
-import org.apache.lucene.index.Fields;
 import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.PostingsEnum;
@@ -38,38 +37,28 @@ final class TermVectorFilteredLeafReader extends FilterLeafReader {
   // NOTE: super ("in") is baseLeafReader
 
   private final Terms filterTerms;
+  private final String fieldFilter;
 
   /**
    * <p>Construct a FilterLeafReader based on the specified base reader.
    * <p>Note that base reader is closed if this FilterLeafReader is closed.</p>
-   *
    * @param baseLeafReader full/original reader.
    * @param filterTerms set of terms to filter by -- probably from a TermVector or MemoryIndex.
+   * @param fieldFilter the field to do this on
    */
-  TermVectorFilteredLeafReader(LeafReader baseLeafReader, Terms filterTerms) {
+  TermVectorFilteredLeafReader(LeafReader baseLeafReader, Terms filterTerms, String fieldFilter) {
     super(baseLeafReader);
     this.filterTerms = filterTerms;
+    this.fieldFilter = fieldFilter;
   }
 
   @Override
-  public Fields fields() throws IOException {
-    return new TermVectorFilteredFields(in.fields(), filterTerms);
-  }
-
-  private static final class TermVectorFilteredFields extends FilterLeafReader.FilterFields {
-    // NOTE: super ("in") is baseFields
-
-    private final Terms filterTerms;
-
-    TermVectorFilteredFields(Fields baseFields, Terms filterTerms) {
-      super(baseFields);
-      this.filterTerms = filterTerms;
+  public Terms terms(String field) throws IOException {
+    if (!field.equals(fieldFilter)) {
+      return super.terms(field); // proceed like normal for fields we're not interested in
     }
-
-    @Override
-    public Terms terms(String field) throws IOException {
-      return new TermsFilteredTerms(in.terms(field), filterTerms);
-    }
+    Terms terms = in.terms(field);
+    return terms==null ? null : new TermsFilteredTerms(terms, filterTerms);
   }
 
   private static final class TermsFilteredTerms extends FilterLeafReader.FilterTerms {
@@ -122,7 +111,7 @@ final class TermVectorFilteredLeafReader extends FilterLeafReader {
       boolean termInBothTermsEnum = baseTermsEnum.seekExact(currentTerm);
 
       if (!termInBothTermsEnum) {
-        throw new IllegalStateException("Term vector term " + currentTerm + " does not appear in full index.");
+        throw new IllegalStateException("Term vector term '" + currentTerm.utf8ToString() + "' does not appear in full index.");
       }
     }
 

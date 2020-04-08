@@ -17,7 +17,6 @@
 
 package org.apache.solr.schema;
 
-import java.lang.invoke.MethodHandles;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.Date;
@@ -25,12 +24,11 @@ import java.util.Date;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.IndexableField;
-import org.apache.lucene.legacy.LegacyNumericType;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.LongFieldSource;
 import org.apache.lucene.queries.function.valuesource.MultiValuedLongFieldSource;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.SortedNumericSelector;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
@@ -38,13 +36,71 @@ import org.apache.lucene.util.mutable.MutableValueDate;
 import org.apache.lucene.util.mutable.MutableValueLong;
 import org.apache.solr.search.QParser;
 import org.apache.solr.uninverting.UninvertingReader;
+import org.apache.solr.update.processor.TimestampUpdateProcessorFactory;
 import org.apache.solr.util.DateMathParser;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
+/**
+ * FieldType that can represent any Date/Time with millisecond precision.
+ * <p>
+ * Date Format for the XML, incoming and outgoing:
+ * </p>
+ * <blockquote>
+ * A date field shall be of the form 1995-12-31T23:59:59Z
+ * The trailing "Z" designates UTC time and is mandatory
+ * (See below for an explanation of UTC).
+ * Optional fractional seconds are allowed, as long as they do not end
+ * in a trailing 0 (but any precision beyond milliseconds will be ignored).
+ * All other parts are mandatory.
+ * </blockquote>
+ * <p>
+ * This format was derived to be standards compliant (ISO 8601) and is a more
+ * restricted form of the
+ * <a href="http://www.w3.org/TR/xmlschema-2/#dateTime-canonical-representation">canonical
+ * representation of dateTime</a> from XML schema part 2.  Examples...
+ * </p>
+ * <ul>
+ *   <li>1995-12-31T23:59:59Z</li>
+ *   <li>1995-12-31T23:59:59.9Z</li>
+ *   <li>1995-12-31T23:59:59.99Z</li>
+ *   <li>1995-12-31T23:59:59.999Z</li>
+ * </ul>
+ * <p>
+ * Note that <code>DatePointField</code> is lenient with regards to parsing fractional
+ * seconds that end in trailing zeros and will ensure that those values
+ * are indexed in the correct canonical format.
+ * </p>
+ * <p>
+ * This FieldType also supports incoming "Date Math" strings for computing
+ * values by adding/rounding internals of time relative either an explicit
+ * datetime (in the format specified above) or the literal string "NOW",
+ * ie: "NOW+1YEAR", "NOW/DAY", "1995-12-31T23:59:59.999Z+5MINUTES", etc...
+ * -- see {@link DateMathParser} for more examples.
+ * </p>
+ * <p>
+ * <b>NOTE:</b> Although it is possible to configure a <code>DatePointField</code>
+ * instance with a default value of "<code>NOW</code>" to compute a timestamp
+ * of when the document was indexed, this is not advisable when using SolrCloud
+ * since each replica of the document may compute a slightly different value.
+ * {@link TimestampUpdateProcessorFactory} is recommended instead.
+ * </p>
+ *
+ * <p>
+ * Explanation of "UTC"...
+ * </p>
+ * <blockquote>
+ * "In 1970 the Coordinated Universal Time system was devised by an
+ * international advisory group of technical experts within the International
+ * Telecommunication Union (ITU).  The ITU felt it was best to designate a
+ * single abbreviation for use in all languages in order to minimize
+ * confusion.  Since unanimous agreement could not be achieved on using
+ * either the English word order, CUT, or the French word order, TUC, the
+ * acronym UTC was chosen as a compromise."
+ * </blockquote>
+ *
+ * @see TrieDateField
+ * @see PointField
+ */
 public class DatePointField extends PointField implements DateValueFieldType {
-
-  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   public DatePointField() {
     type = NumberType.DATE;
@@ -53,8 +109,8 @@ public class DatePointField extends PointField implements DateValueFieldType {
 
   @Override
   public Object toNativeType(Object val) {
-    if (val instanceof String) {
-      return DateMathParser.parseMath(null, (String) val);
+    if (val instanceof CharSequence) {
+      return DateMathParser.parseMath(null, val.toString());
     }
     return super.toNativeType(val);
   }
@@ -67,6 +123,7 @@ public class DatePointField extends PointField implements DateValueFieldType {
     } else {
       actualMin = DateMathParser.parseMath(null, min).getTime();
       if (!minInclusive) {
+        if (actualMin == Long.MAX_VALUE) return new MatchNoDocsQuery();
         actualMin++;
       }
     }
@@ -75,6 +132,7 @@ public class DatePointField extends PointField implements DateValueFieldType {
     } else {
       actualMax = DateMathParser.parseMath(null, max).getTime();
       if (!maxInclusive) {
+        if (actualMax == Long.MIN_VALUE) return new MatchNoDocsQuery();
         actualMax--;
       }
     }
@@ -104,6 +162,9 @@ public class DatePointField extends PointField implements DateValueFieldType {
   @Override
   public Query getSetQuery(QParser parser, SchemaField field, Collection<String> externalVals) {
     assert externalVals.size() > 0;
+    if (!field.indexed()) {
+      return super.getSetQuery(parser, field, externalVals);
+    }
     long[] values = new long[externalVals.size()];
     int i = 0;
     for (String val:externalVals) {
@@ -127,27 +188,9 @@ public class DatePointField extends PointField implements DateValueFieldType {
   }
 
   @Override
-  public SortField getSortField(SchemaField field, boolean top) {
-    field.checkSortability();
-
-    Object missingValue = null;
-    boolean sortMissingLast = field.sortMissingLast();
-    boolean sortMissingFirst = field.sortMissingFirst();
-
-    if (sortMissingLast) {
-      missingValue = top ? Long.MIN_VALUE : Long.MAX_VALUE;
-    } else if (sortMissingFirst) {
-      missingValue = top ? Long.MAX_VALUE : Long.MIN_VALUE;
-    }
-    SortField sf = new SortField(field.getName(), SortField.Type.LONG, top);
-    sf.setMissingValue(missingValue);
-    return sf;
-  }
-
-  @Override
   public UninvertingReader.Type getUninversionType(SchemaField sf) {
     if (sf.multiValued()) {
-      return UninvertingReader.Type.SORTED_LONG;
+      return null;
     } else {
       return UninvertingReader.Type.LONG_POINT;
     }
@@ -165,14 +208,7 @@ public class DatePointField extends PointField implements DateValueFieldType {
   }
 
   @Override
-  public LegacyNumericType getNumericType() {
-    return LegacyNumericType.LONG;
-  }
-
-  @Override
   public IndexableField createField(SchemaField field, Object value) {
-    if (!isFieldUsed(field)) return null;
-
     Date date = (value instanceof Date)
         ? ((Date)value)
         : DateMathParser.parseMath(null, value.toString());

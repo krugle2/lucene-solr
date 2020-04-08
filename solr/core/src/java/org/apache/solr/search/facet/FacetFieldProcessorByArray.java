@@ -18,11 +18,17 @@
 package org.apache.solr.search.facet;
 
 import java.io.IOException;
+import java.util.Date;
+import java.util.function.IntFunction;
 
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
+import org.apache.lucene.search.Query;
 import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.schema.SchemaField;
+import org.apache.solr.search.facet.SlotAcc.SlotContext;
+
+import static org.apache.solr.search.facet.FacetContext.SKIP_FACET;
 
 /**
  * Base class for DV/UIF accumulating counts into an array by ordinal.  It's
@@ -57,6 +63,16 @@ abstract class FacetFieldProcessorByArray extends FacetFieldProcessor {
   }
 
   private SimpleOrderedMap<Object> calcFacets() throws IOException {
+    SimpleOrderedMap<Object> refineResult = null;
+    boolean skipThisFacet = (fcontext.flags & SKIP_FACET) != 0;
+
+    if (fcontext.facetInfo != null) {
+      refineResult = refineFacets();
+      // if we've seen this facet bucket, then refining can be done.  If we haven't, we still
+      // only need to continue if we need allBuckets or numBuckets info.
+      if (skipThisFacet || !freq.allBuckets) return refineResult;
+    }
+
     String prefix = freq.prefix;
     if (prefix == null || prefix.length() == 0) {
       prefixRef = null;
@@ -66,6 +82,20 @@ abstract class FacetFieldProcessorByArray extends FacetFieldProcessor {
     }
 
     findStartAndEndOrds();
+
+    if (refineResult != null) {
+      if (freq.allBuckets) {
+        createAccs(nDocs, 1);
+        allBucketsAcc = new SpecialSlotAcc(fcontext, null, -1, accs, 0);
+        collectDocs();
+
+        SimpleOrderedMap<Object> allBuckets = new SimpleOrderedMap<>();
+        allBuckets.add("count", allBucketsAcc.getSpecialCount());
+        allBucketsAcc.setValues(allBuckets, -1); // -1 slotNum is unused for SpecialSlotAcc
+        refineResult.add("allBuckets", allBuckets);
+        return refineResult;
+      }
+    }
 
     maxSlots = nTerms;
 
@@ -89,7 +119,28 @@ abstract class FacetFieldProcessorByArray extends FacetFieldProcessor {
             throw new RuntimeException(e);
           }
         },
-        Object::toString); // getFieldQueryVal
+        obj -> valueObjToString(obj)
+    );
   }
 
+  private static String valueObjToString(Object obj) {
+    return (obj instanceof Date) ? ((Date)obj).toInstant().toString() : obj.toString();
+  }
+
+                                                           
+  /**
+   * SlotContext to use during all {@link SlotAcc} collection.
+   *
+   * @see #lookupOrd
+   */
+  public IntFunction<SlotContext> slotContext = (slotNum) -> {
+    try {
+      Object value = sf.getType().toObject(sf, lookupOrd(slotNum));
+      Query q = makeBucketQuery(valueObjToString(value));
+      assert null != q : "null query for: '" + value + "'";
+      return new SlotContext(q);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+  };
 }

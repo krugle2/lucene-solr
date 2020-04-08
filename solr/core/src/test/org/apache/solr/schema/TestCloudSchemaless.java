@@ -15,16 +15,22 @@
  * limitations under the License.
  */
 package org.apache.solr.schema;
+
+import java.lang.invoke.MethodHandles;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.SortedMap;
+import java.util.TreeMap;
+
 import org.apache.solr.SolrTestCaseJ4.SuppressSSL;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
-import org.apache.solr.client.solrj.impl.HttpSolrClient;
 import org.apache.solr.cloud.AbstractFullDistribZkTestBase;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.util.BaseTestHarness;
-import org.apache.solr.util.RestTestHarness;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.junit.After;
 import org.junit.Test;
@@ -32,18 +38,11 @@ import org.restlet.ext.servlet.ServerServlet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.Math;
-import java.lang.invoke.MethodHandles;
-import java.util.Arrays;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.SortedMap;
-import java.util.TreeMap;
-
 /**
  * Tests a schemaless collection configuration with SolrCloud
  */
 @SuppressSSL(bugUrl = "https://issues.apache.org/jira/browse/SOLR-5776")
+// See: https://issues.apache.org/jira/browse/SOLR-12028 Tests cannot remove files on Windows machines occasionally
 public class TestCloudSchemaless extends AbstractFullDistribZkTestBase {
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
   private static final String SUCCESS_XPATH = "/response/lst[@name='responseHeader']/int[@name='status'][.='0']";
@@ -51,9 +50,7 @@ public class TestCloudSchemaless extends AbstractFullDistribZkTestBase {
   @After
   public void teardDown() throws Exception {
     super.tearDown();
-    for (RestTestHarness h : restTestHarnesses) {
-      h.close();
-    }
+    closeRestTestHarnesses();
   }
 
   public TestCloudSchemaless() {
@@ -75,15 +72,6 @@ public class TestCloudSchemaless extends AbstractFullDistribZkTestBase {
     return extraServlets;
   }
 
-  private List<RestTestHarness> restTestHarnesses = new ArrayList<>();
-
-  private void setupHarnesses() {
-    for (final SolrClient client : clients) {
-      RestTestHarness harness = new RestTestHarness(() -> ((HttpSolrClient)client).getBaseURL());
-      restTestHarnesses.add(harness);
-    }
-  }
-
   private String[] getExpectedFieldResponses(int numberOfDocs) {
     String[] expectedAddFields = new String[1 + numberOfDocs];
     expectedAddFields[0] = SUCCESS_XPATH;
@@ -98,14 +86,15 @@ public class TestCloudSchemaless extends AbstractFullDistribZkTestBase {
 
   @Test
   @ShardsFixed(num = 8)
+  // 12-Jun-2018 @BadApple(bugUrl="https://issues.apache.org/jira/browse/SOLR-12028") // 04-May-2018
   public void test() throws Exception {
-    setupHarnesses();
+    setupRestTestHarnesses();
 
     // First, add a bunch of documents in a single update with the same new field.
     // This tests that the replicas properly handle schema additions.
 
     int slices =  getCommonCloudSolrClient().getZkStateReader().getClusterState()
-      .getActiveSlices("collection1").size();
+      .getCollection("collection1").getActiveSlices().size();
     int trials = 50;
     // generate enough docs so that we can expect at least a doc per slice
     int numDocsPerTrial = (int)(slices * (Math.log(slices) + 1));
@@ -127,22 +116,24 @@ public class TestCloudSchemaless extends AbstractFullDistribZkTestBase {
 
     String [] expectedFields = getExpectedFieldResponses(docNumber);
     // Check that all the fields were added
-    for (RestTestHarness client : restTestHarnesses) {
-      String request = "/schema/fields?wt=xml";
-      String response = client.query(request);
-      String result = BaseTestHarness.validateXPath(response, expectedFields);
-      if (result != null) {
-        String msg = "QUERY FAILED: xpath=" + result + "  request=" + request + "  response=" + response;
-        log.error(msg);
-        fail(msg);
+    forAllRestTestHarnesses(client -> {
+      try {
+        String request = "/schema/fields?wt=xml";
+        String response = client.query(request);
+        String result = BaseTestHarness.validateXPath(response, expectedFields);
+        if (result != null) {
+          String msg = "QUERY FAILED: xpath=" + result + "  request=" + request + "  response=" + response;
+          log.error(msg);
+          fail(msg);
+        }
+      } catch (Exception ex) {
+        fail("Caught exception: "+ex);
       }
-    }
+    });
 
     // Now, let's ensure that writing the same field with two different types fails
     int failTrials = 50;
     for (int i = 0; i < failTrials; ++i) {
-      List<SolrInputDocument> docs = null;
-
       SolrInputDocument intDoc = new SolrInputDocument();
       intDoc.addField("id", Long.toHexString(Double.doubleToLongBits(random().nextDouble())));
       intDoc.addField("longOrDateField" + i, "123");
@@ -152,28 +143,20 @@ public class TestCloudSchemaless extends AbstractFullDistribZkTestBase {
       dateDoc.addField("longOrDateField" + i, "1995-12-31T23:59:59Z");
 
       // randomize the order of the docs
-      if (random().nextBoolean()) {
-        docs = Arrays.asList(intDoc, dateDoc);
-      } else {
-        docs = Arrays.asList(dateDoc, intDoc);
-      }
+      List<SolrInputDocument> docs = random().nextBoolean()? Arrays.asList(intDoc, dateDoc): Arrays.asList(dateDoc, intDoc);
 
-      try {
+      SolrException ex = expectThrows(SolrException.class,  () -> {
         randomClient.add(docs);
         randomClient.commit();
-        fail("Expected Bad Request Exception");
-      } catch (SolrException se) {
-        assertEquals(ErrorCode.BAD_REQUEST, ErrorCode.getErrorCode(se.code()));
-      }
+      });
+      assertEquals(ErrorCode.BAD_REQUEST, ErrorCode.getErrorCode(ex.code()));
 
-      try {
+      ex = expectThrows(SolrException.class,  () -> {
         CloudSolrClient cloudSolrClient = getCommonCloudSolrClient();
         cloudSolrClient.add(docs);
         cloudSolrClient.commit();
-        fail("Expected Bad Request Exception");
-      } catch (SolrException ex) {
-        assertEquals(ErrorCode.BAD_REQUEST, ErrorCode.getErrorCode((ex).code()));
-      }
+      });
+      assertEquals(ErrorCode.BAD_REQUEST, ErrorCode.getErrorCode(ex.code()));
     }
   }
 }

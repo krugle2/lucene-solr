@@ -22,7 +22,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.lucene.util.TestUtil;
-import org.apache.solr.SolrTestCaseJ4.SuppressPointFields;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.client.solrj.request.schema.SchemaRequest.Field;
@@ -36,13 +35,13 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Rule;
+import org.junit.Test;
 import org.junit.rules.TestName;
 
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@SuppressPointFields(bugUrl="https://issues.apache.org/jira/browse/SOLR-9992")
 public class TestSegmentSorting extends SolrCloudTestCase {
 
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
@@ -87,12 +86,13 @@ public class TestSegmentSorting extends SolrCloudTestCase {
     }
     
     ZkStateReader zkStateReader = cloudSolrClient.getZkStateReader();
-    AbstractDistribZkTestBase.waitForRecoveriesToFinish(collectionName, zkStateReader, true, true, 330);
+    cluster.waitForActiveCollection(collectionName, NUM_SHARDS, NUM_SHARDS * REPLICATION_FACTOR);
     
     cloudSolrClient.setDefaultCollection(collectionName);
   }
 
 
+  // 12-Jun-2018 @Test@BadApple(bugUrl="https://issues.apache.org/jira/browse/SOLR-12028")
   public void testSegmentTerminateEarly() throws Exception {
 
     final SegmentTerminateEarlyTestState tstes = new SegmentTerminateEarlyTestState(random());
@@ -122,10 +122,12 @@ public class TestSegmentSorting extends SolrCloudTestCase {
    * In this situation, the updates should *NOT* be done inplace, because that would
    * break the index sorting
    */
+  @Test
+  // 12-Jun-2018 @BadApple(bugUrl="https://issues.apache.org/jira/browse/SOLR-12028") // 26-Mar-2018
   public void testAtomicUpdateOfSegmentSortField() throws Exception {
 
     final CloudSolrClient cloudSolrClient = cluster.getSolrClient();
-    final String updateField = SegmentTerminateEarlyTestState.timestampField;
+    final String updateField = SegmentTerminateEarlyTestState.TIMESTAMP_FIELD;
 
     // sanity check that updateField is in fact a DocValues only field, meaning it
     // would normally be eligable for inplace updates -- if it weren't also used for merge sorting

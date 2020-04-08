@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -32,16 +33,19 @@ import org.apache.solr.cloud.CloudDescriptor;
 import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.util.ExecutorUtil;
 import org.apache.solr.common.util.NamedList;
+import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.core.CloseHook;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.request.LocalSolrQueryRequest;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestInfo;
 import org.apache.solr.response.SolrQueryResponse;
+import org.apache.solr.security.PKIAuthenticationPlugin;
 import org.apache.solr.update.AddUpdateCommand;
 import org.apache.solr.update.CommitUpdateCommand;
 import org.apache.solr.update.DeleteUpdateCommand;
@@ -160,6 +164,7 @@ import static org.apache.solr.common.SolrException.ErrorCode.SERVER_ERROR;
  *   &lt;null name="ttlParamName"/&gt;
  *   &lt;str name="expirationFieldName"&gt;_expire_at_&lt;/str&gt;
  * &lt;/processor&gt;</pre> 
+ * @since 4.8.0
  */
 public final class DocExpirationUpdateProcessorFactory 
   extends UpdateRequestProcessorFactory 
@@ -377,10 +382,15 @@ public final class DocExpirationUpdateProcessorFactory
     public void run() {
       // setup the request context early so the logging (including any from 
       // shouldWeDoPeriodicDelete() ) includes the core context info
-      final SolrQueryRequest req = new LocalSolrQueryRequest
+      final LocalSolrQueryRequest req = new LocalSolrQueryRequest
         (factory.core, Collections.<String,String[]>emptyMap());
       try {
+        // HACK: to indicate to PKI that this is a server initiated request for the purposes
+        // of distributed requet/credential forwarding...
+        req.setUserPrincipalName(PKIAuthenticationPlugin.NODE_IS_USER);
+        
         final SolrQueryResponse rsp = new SolrQueryResponse();
+        rsp.addResponseHeader(new SimpleOrderedMap<>(1));
         SolrRequestInfo.setRequestInfo(new SolrRequestInfo(req, rsp));
         try {
           
@@ -388,7 +398,7 @@ public final class DocExpirationUpdateProcessorFactory
             // No-Op
             return;
           }
-          log.info("Begining periodic deletion of expired docs");
+          log.info("Beginning periodic deletion of expired docs");
 
           UpdateRequestProcessorChain chain = core.getUpdateProcessingChain(deleteChainName);
           UpdateRequestProcessor proc = chain.createProcessor(req, rsp);
@@ -454,7 +464,7 @@ public final class DocExpirationUpdateProcessorFactory
    * </p>
    */
   private boolean iAmInChargeOfPeriodicDeletes() {
-    ZkController zk = core.getCoreDescriptor().getCoreContainer().getZkController();
+    ZkController zk = core.getCoreContainer().getZkController();
 
     if (null == zk) return true;
     
@@ -469,12 +479,13 @@ public final class DocExpirationUpdateProcessorFactory
     CloudDescriptor desc = core.getCoreDescriptor().getCloudDescriptor();
     String col = desc.getCollectionName();
 
-    List<Slice> slices = new ArrayList<Slice>(zk.getClusterState().getActiveSlices(col));
-    Collections.sort(slices, COMPARE_SLICES_BY_NAME);
-    if (slices.isEmpty()) {
+    DocCollection docCollection = zk.getClusterState().getCollection(col);
+    if (docCollection.getActiveSlicesArr().length == 0) {
       log.error("Collection {} has no active Slices?", col);
       return false;
     }
+    List<Slice> slices = new ArrayList<>(Arrays.asList(docCollection.getActiveSlicesArr()));
+    Collections.sort(slices, COMPARE_SLICES_BY_NAME);
     Replica firstSliceLeader = slices.get(0).getLeader();
     if (null == firstSliceLeader) {
       log.warn("Slice in charge of periodic deletes for {} does not currently have a leader",

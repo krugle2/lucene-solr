@@ -20,9 +20,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Comparator;
 
-import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FieldComparator;
-import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.SortedNumericSelector;
@@ -52,7 +50,7 @@ final class Sorter {
   }
 
   /**
-   * A permutation of doc IDs. For every document ID between <tt>0</tt> and
+   * A permutation of doc IDs. For every document ID between <code>0</code> and
    * {@link IndexReader#maxDoc()}, <code>oldToNew(newToOld(docID))</code> must
    * return <code>docID</code>.
    */
@@ -396,7 +394,7 @@ final class Sorter {
    * {@link #sort(int, DocComparator)} to compute the old-to-new permutation
    * given a list of documents and their corresponding values.
    * <p>
-   * A return value of <tt>null</tt> is allowed and means that
+   * A return value of <code>null</code> is allowed and means that
    * <code>reader</code> is already sorted.
    * <p>
    * <b>NOTE:</b> deleted documents are expected to appear in the mapping as
@@ -445,31 +443,5 @@ final class Sorter {
   public String toString() {
     return getID();
   }
-
-  static final Scorer FAKESCORER = new Scorer(null) {
-
-    float score;
-    int doc = -1;
-    int freq = 1;
-
-    @Override
-    public int docID() {
-      return doc;
-    }
-
-    public DocIdSetIterator iterator() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public int freq() throws IOException {
-      return freq;
-    }
-
-    @Override
-    public float score() throws IOException {
-      return score;
-    }
-  };
   
 }

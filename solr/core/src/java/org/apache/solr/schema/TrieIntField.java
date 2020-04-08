@@ -23,7 +23,7 @@ import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
-import org.apache.lucene.legacy.LegacyNumericUtils;
+import org.apache.solr.legacy.LegacyNumericUtils;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.docvalues.IntDocValues;
@@ -42,7 +42,9 @@ import org.apache.lucene.util.mutable.MutableValueInt;
  * </ul>
  * 
  * @see Integer
+ * @deprecated Trie fields are deprecated as of Solr 7.0
  */
+@Deprecated
 public class TrieIntField extends TrieField implements IntValueFieldType {
   {
     type = NumberType.INTEGER;
@@ -53,9 +55,9 @@ public class TrieIntField extends TrieField implements IntValueFieldType {
     if(val==null) return null;
     if (val instanceof Number) return ((Number) val).intValue();
     try {
-      if (val instanceof String) return Integer.parseInt((String) val);
+      if (val instanceof CharSequence) return Integer.parseInt(val.toString());
     } catch (NumberFormatException e) {
-      Float v = Float.parseFloat((String) val);
+      Float v = Float.parseFloat(val.toString());
       return v.intValue();
     }
     return super.toNativeType(val);

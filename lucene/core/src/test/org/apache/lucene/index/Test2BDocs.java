@@ -35,7 +35,7 @@ import org.apache.lucene.util.LuceneTestCase.SuppressSysoutChecks;
 import org.apache.lucene.util.TestUtil;
 import org.apache.lucene.util.TimeUnits;
 
-@SuppressCodecs({"SimpleText", "Memory", "Direct"})
+@SuppressCodecs({"SimpleText", "Direct"})
 @TimeoutSuite(millis = 80 * TimeUnits.HOUR) // effectively no limit
 @Monster("Takes ~30min")
 @SuppressSysoutChecks(bugUrl = "Stuff gets printed")
@@ -91,7 +91,7 @@ public class Test2BDocs extends LuceneTestCase {
       LeafReader reader = context.reader();
       int lim = context.reader().maxDoc();
 
-      Terms terms = reader.fields().terms("f1");
+      Terms terms = reader.terms("f1");
       for (int i=0; i<10000; i++) {
         TermsEnum te = terms.iterator();
         assertTrue( te.seekExact(term) );

@@ -16,12 +16,10 @@
  */
 package org.apache.solr.client.solrj.io.stream.eval;
 
+import java.util.HashMap;
 import java.util.Map;
 
-import junit.framework.Assert;
-
-import org.apache.commons.collections.map.HashedMap;
-import org.apache.lucene.util.LuceneTestCase;
+import org.apache.solr.SolrTestCase;
 import org.apache.solr.client.solrj.io.Tuple;
 import org.apache.solr.client.solrj.io.eval.AddEvaluator;
 import org.apache.solr.client.solrj.io.eval.AndEvaluator;
@@ -29,7 +27,9 @@ import org.apache.solr.client.solrj.io.eval.RawValueEvaluator;
 import org.apache.solr.client.solrj.io.stream.expr.StreamFactory;
 import org.junit.Test;
 
-public class RawValueEvaluatorTest extends LuceneTestCase {
+import junit.framework.Assert;
+
+public class RawValueEvaluatorTest extends SolrTestCase {
 
   StreamFactory factory;
   Map<String, Object> values;
@@ -42,7 +42,7 @@ public class RawValueEvaluatorTest extends LuceneTestCase {
       .withFunctionName("add", AddEvaluator.class)
       .withFunctionName("and", AndEvaluator.class)
       ;
-    values = new HashedMap();
+    values = new HashMap<String,Object>();
   }
     
   @Test

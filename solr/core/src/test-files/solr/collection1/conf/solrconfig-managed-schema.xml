@@ -24,10 +24,37 @@
 
   <schemaFactory class="ManagedIndexSchemaFactory">
     <bool name="mutable">${managed.schema.mutable}</bool>
-    <str name="managedSchemaResourceName">managed-schema</str>
+    <str name="managedSchemaResourceName">${managed.schema.resourceName:managed-schema}</str>
   </schemaFactory>
 
   <codecFactory class="solr.SchemaCodecFactory"/>
+
+  <requestDispatcher>
+    <!-- Tests rely on stream.body -->
+    <requestParsers enableStreamBody="true" />
+  </requestDispatcher>
+  
+  <query>
+    <filterCache
+        enabled="${filterCache.enabled:false}"
+        size="512"
+        initialSize="512"
+        autowarmCount="2"/>
+
+    <queryResultCache
+        enabled="${queryResultCache.enabled:false}"
+        size="512"
+        initialSize="512"
+        autowarmCount="2"/>
+
+    <documentCache
+        enabled="${documentCache.enabled:false}"
+        size="512"
+        initialSize="512"
+        autowarmCount="0"/>
+
+    <enableLazyFieldLoading>${enableLazyFieldLoading:false}</enableLazyFieldLoading>
+  </query>
 
   <updateHandler>
     <updateLog enable="${enable.update.log}">
@@ -35,7 +62,7 @@
     </updateLog> 
   </updateHandler>
 
-  <requestHandler name="standard" class="solr.StandardRequestHandler">
+  <requestHandler name="/select" class="solr.SearchHandler">
     <bool name="httpCaching">true</bool>
   </requestHandler>
 
@@ -46,5 +73,11 @@
       <str name="b">${my.custom.variable.b:B}</str>
     </lst>
   </requestHandler>
+
+  <initParams path="/select">
+    <lst name="defaults">
+      <str name="df">text</str>
+    </lst>
+  </initParams>
 
 </config>

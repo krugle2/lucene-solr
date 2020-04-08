@@ -30,16 +30,18 @@ import java.util.Set;
 
 import com.google.common.collect.ImmutableSet;
 import org.apache.commons.codec.binary.Base64;
+import org.apache.solr.common.util.CommandOperation;
+import org.apache.solr.common.util.Utils;
 import org.apache.solr.common.util.ValidatingJsonMap;
 
-import org.apache.solr.util.CommandOperation;
-import org.apache.solr.api.ApiBag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.apache.solr.handler.admin.SecurityConfHandler.getMapValue;
 
 public class Sha256AuthenticationProvider implements ConfigEditablePlugin,  BasicAuthPlugin.AuthenticationProvider {
+
+  static String CANNOT_DELETE_LAST_USER_ERROR = "You cannot delete the last user. At least one user must be configured at all times.";
   private Map<String, String> credentials;
   private String realm;
   private Map<String, String> promptHeader;
@@ -49,26 +51,32 @@ public class Sha256AuthenticationProvider implements ConfigEditablePlugin,  Basi
 
   static void putUser(String user, String pwd, Map credentials) {
     if (user == null || pwd == null) return;
+    String val = getSaltedHashedValue(pwd);
+    credentials.put(user, val);
+  }
 
+  public static String getSaltedHashedValue(String pwd) {
     final Random r = new SecureRandom();
     byte[] salt = new byte[32];
     r.nextBytes(salt);
     String saltBase64 = Base64.encodeBase64String(salt);
     String val = sha256(pwd, saltBase64) + " " + saltBase64;
-    credentials.put(user, val);
+    return val;
   }
 
   @Override
   public void init(Map<String, Object> pluginConfig) {
-    if (pluginConfig.get("realm") != null) this.realm = (String) pluginConfig.get("realm");
-    else this.realm = "solr";
+    if (pluginConfig.containsKey(BasicAuthPlugin.PROPERTY_REALM)) {
+      this.realm = (String) pluginConfig.get(BasicAuthPlugin.PROPERTY_REALM);
+    } else {
+      this.realm = "solr";
+    }
     
     promptHeader = Collections.unmodifiableMap(Collections.singletonMap("WWW-Authenticate", "Basic realm=\"" + realm + "\""));
     credentials = new LinkedHashMap<>();
     Map<String,String> users = (Map<String,String>) pluginConfig.get("credentials");
-    if (users == null) {
-      log.debug("No users configured yet");
-      return;
+    if (users == null || users.isEmpty()) {
+      throw new IllegalStateException("No users configured yet. At least one user must be configured in security.json");
     }
     for (Map.Entry<String, String> e : users.entrySet()) {
       String v = e.getValue();
@@ -135,7 +143,15 @@ public class Sha256AuthenticationProvider implements ConfigEditablePlugin,  Basi
           cmd.addError("No such user(s) " +names );
           return null;
         }
-        for (String name : names) map.remove(name);
+        for (String name : names) {
+          if (map.containsKey(name)) {
+            if (map.size() == 1){
+              cmd.addError(CANNOT_DELETE_LAST_USER_ERROR);
+              return null;
+            }
+          }
+          map.remove(name);
+        }
         return latestConf;
       }
       if ("set-user".equals(cmd.name) ) {
@@ -157,7 +173,7 @@ public class Sha256AuthenticationProvider implements ConfigEditablePlugin,  Basi
 
   @Override
   public ValidatingJsonMap getSpec() {
-    return ApiBag.getSpec("cluster.security.BasicAuth.Commands").getSpec();
+    return Utils.getSpec("cluster.security.BasicAuth.Commands").getSpec();
   }
 
   static final Set<String> supported_ops = ImmutableSet.of("set-user", "delete-user");

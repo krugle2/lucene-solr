@@ -32,7 +32,7 @@ import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.api.Api;
 
 import static java.util.Collections.singletonList;
-import static org.apache.solr.api.ApiBag.getSpec;
+import static org.apache.solr.common.util.Utils.getSpec;
 import static org.apache.solr.common.params.CommonParams.PATH;
 
 public class InfoHandler extends RequestHandlerBase  {
@@ -50,6 +50,8 @@ public class InfoHandler extends RequestHandlerBase  {
     handlers.put("properties", new PropertiesRequestHandler());
     handlers.put("logging", new LoggingHandler(coreContainer));
     handlers.put("system", new SystemInfoHandler(coreContainer));
+    handlers.put("health", new HealthCheckHandler(coreContainer));
+
   }
 
 

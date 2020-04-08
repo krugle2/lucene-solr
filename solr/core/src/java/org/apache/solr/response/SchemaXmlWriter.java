@@ -98,15 +98,6 @@ public class SchemaXmlWriter extends TextResponseWriter {
         closeStartTag(false);
         writer.write(val.toString());
         endTag(IndexSchema.UNIQUE_KEY, false);
-      } else if (schemaPropName.equals(IndexSchema.DEFAULT_SEARCH_FIELD)) {
-        openStartTag(IndexSchema.DEFAULT_SEARCH_FIELD);
-        closeStartTag(false);
-        writer.write(val.toString());
-        endTag(IndexSchema.DEFAULT_SEARCH_FIELD, false);
-      } else if (schemaPropName.equals(IndexSchema.SOLR_QUERY_PARSER)) {
-        openStartTag(IndexSchema.SOLR_QUERY_PARSER);
-        writeAttr(IndexSchema.DEFAULT_OPERATOR, ((Map<String ,Object>) val).get(IndexSchema.DEFAULT_OPERATOR).toString());
-        closeStartTag(true);
       } else if (schemaPropName.equals(IndexSchema.SIMILARITY)) {
         writeSimilarity((SimpleOrderedMap<Object>) val);
       } else if (schemaPropName.equals(IndexSchema.FIELD_TYPES)) {
@@ -228,6 +219,8 @@ public class SchemaXmlWriter extends TextResponseWriter {
         if ( ! "solr.TokenizerChain".equals(analyzerProperties.getVal(i))) {
           writeAttr(name, analyzerProperties.getVal(i).toString());
         }
+      } else if (name.equals(IndexSchema.LUCENE_MATCH_VERSION_PARAM)) {
+        writeAttr(name, analyzerProperties.getVal(i).toString());
       }
     }
     boolean isEmptyTag

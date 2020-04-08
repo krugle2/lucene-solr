@@ -33,6 +33,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.lucene.analysis.util.ResourceLoader;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.params.CollectionAdminParams;
+import org.apache.solr.common.util.StrUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +45,7 @@ public class MemClassLoader extends ClassLoader implements AutoCloseable, Resour
   private final SolrResourceLoader parentLoader;
   private List<PluginBag.RuntimeLib> libs = new ArrayList<>();
   private Map<String, Class> classCache = new HashMap<>();
+  private List<String> errors = new ArrayList<>();
 
 
   public MemClassLoader(List<PluginBag.RuntimeLib> libs, SolrResourceLoader resourceLoader) {
@@ -50,6 +53,22 @@ public class MemClassLoader extends ClassLoader implements AutoCloseable, Resour
     this.libs = libs;
   }
 
+  synchronized void loadRemoteJars() {
+    if (allJarsLoaded) return;
+    int count = 0;
+    for (PluginBag.RuntimeLib lib : libs) {
+      if (lib.getUrl() != null) {
+        try {
+          lib.loadJar();
+          lib.verify();
+        } catch (Exception e) {
+          log.error("Error loading runtime library", e);
+        }
+        count++;
+      }
+    }
+    if (count == libs.size()) allJarsLoaded = true;
+  }
 
   public synchronized void loadJars() {
     if (allJarsLoaded) return;
@@ -59,6 +78,7 @@ public class MemClassLoader extends ClassLoader implements AutoCloseable, Resour
         lib.loadJar();
         lib.verify();
       } catch (Exception exception) {
+        errors.add(exception.getMessage());
         if (exception instanceof SolrException) throw (SolrException) exception;
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Atleast one runtimeLib could not be loaded", exception);
       }
@@ -86,13 +106,13 @@ public class MemClassLoader extends ClassLoader implements AutoCloseable, Resour
     try {
       buf = getByteBuffer(name, jarName);
     } catch (Exception e) {
-      throw new ClassNotFoundException("class could not be loaded " + name, e);
+      throw new ClassNotFoundException("class could not be loaded " + name + (errors.isEmpty()? "": "Some dynamic libraries could not be loaded: "+ StrUtils.join(errors, '|')), e);
     }
     if (buf == null) throw new ClassNotFoundException("Class not found :" + name);
     ProtectionDomain defaultDomain = null;
     //using the default protection domain, with no permissions
     try {
-      defaultDomain = new ProtectionDomain(new CodeSource(new URL("http://localhost/.system/blob/" + jarName.get()), (Certificate[]) null),
+      defaultDomain = new ProtectionDomain(new CodeSource(new URL("http://localhost/" + CollectionAdminParams.SYSTEM_COLL + "/blob/" + jarName.get()), (Certificate[]) null),
           null);
     } catch (MalformedURLException mue) {
       throw new ClassNotFoundException("Unexpected exception ", mue);
@@ -168,7 +188,7 @@ public class MemClassLoader extends ClassLoader implements AutoCloseable, Resour
   @Override
   public <T> T newInstance(String cname, Class<T> expectedType) {
     try {
-      return findClass(cname, expectedType).newInstance();
+      return findClass(cname, expectedType).getConstructor().newInstance();
     } catch (SolrException e) {
       throw e;
     } catch (Exception e) {

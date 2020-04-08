@@ -37,24 +37,21 @@
     </ant>
   </target>
 
-  <target name="compile-core" depends="resolve, compile-solr-core, compile-test-framework">
+  <target name="compile-core" depends="resolve, clover, compile-solr-core, compile-test-framework">
     <!-- TODO: why does test-framework override compile-core to use this special classpath? -->
     <compile srcdir="${src.dir}" destdir="${build.dir}/classes/java">
       <classpath refid="test.base.classpath"/>
     </compile>
-    
+
     <!-- Copy the resources folder (if existent) -->
     <copy todir="${build.dir}/classes/java">
       <fileset dir="${resources.dir}" erroronmissingdir="no"/>
     </copy>
   </target>
 
-  <!-- redefine the clover setup, because we dont want to run clover for the test-framework -->
-  <target name="-clover.setup" if="run.clover"/>
-  
   <!-- redefine the forbidden apis for tests, as we check ourselves -->
   <target name="-check-forbidden-tests" depends="-init-forbidden-apis,compile-core">
-    <forbidden-apis suppressAnnotation="**.SuppressForbidden" signaturesFile="${common.dir}/tools/forbiddenApis/tests.txt" classpathref="forbidden-apis.allclasses.classpath"> 
+    <forbidden-apis suppressAnnotation="**.SuppressForbidden" signaturesFile="${common.dir}/tools/forbiddenApis/tests.txt" classpathref="forbidden-apis.allclasses.classpath">
       <fileset dir="${build.dir}/classes/java"/>
     </forbidden-apis>
   </target>
@@ -65,14 +62,14 @@
           depends="compile-core,jar-test-framework,lucene-javadocs,javadocs-test-framework,define-lucene-javadoc-url,check-javadocs-uptodate" unless="javadocs-uptodate-${name}">
     <sequential>
       <mkdir dir="${javadoc.dir}/${name}"/>
-      <!-- NOTE: explicitly not using solr-invoke-javadoc, or attempting to 
-     link to lucene-test-framework because if we did javadoc would 
-     attempt to link class refs in in org.apache.lucene, causing 
-     broken links. (either broken links to things like "Directory" if 
-     lucene-test-framework was first, or broken links to things like 
+      <!-- NOTE: explicitly not using solr-invoke-javadoc, or attempting to
+     link to lucene-test-framework because if we did javadoc would
+     attempt to link class refs in in org.apache.lucene, causing
+     broken links. (either broken links to things like "Directory" if
+     lucene-test-framework was first, or broken links to things like
      LuceneTestCase if lucene-core was first)
       -->
-      <invoke-javadoc destdir="${javadoc.dir}/${name}" 
+      <invoke-javadoc destdir="${javadoc.dir}/${name}"
           title="${Name} ${version} Test Framework API">
   <sources>
     <link offline="true" href="${javadoc.link.junit}"
@@ -119,5 +116,6 @@
     </copy>
   </target>
 
+  <target name="-check-forbidden-sysout"/>
 </project>
 

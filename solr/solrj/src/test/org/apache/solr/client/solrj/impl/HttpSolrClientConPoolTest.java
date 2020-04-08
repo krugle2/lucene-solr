@@ -46,20 +46,22 @@ public class HttpSolrClientConPoolTest extends SolrJettyTestBase {
   
   @BeforeClass
   public static void beforeTest() throws Exception {
-    createJetty(legacyExampleCollection1SolrHome());
+    createAndStartJetty(legacyExampleCollection1SolrHome());
     // stealing the first made jetty
     yetty = jetty;
     barUrl = yetty.getBaseUrl().toString() + "/" + "collection1";
     
-    createJetty(legacyExampleCollection1SolrHome());
+    createAndStartJetty(legacyExampleCollection1SolrHome());
     
     fooUrl = jetty.getBaseUrl().toString() + "/" + "collection1";
   }
   
   @AfterClass
   public static void stopYetty() throws Exception {
-    yetty.stop();
-    yetty = null;
+    if (null != yetty) {
+      yetty.stop();
+      yetty = null;
+    }
   }
   
   public void testPoolSize() throws SolrServerException, IOException {
@@ -70,8 +72,7 @@ public class HttpSolrClientConPoolTest extends SolrJettyTestBase {
       fooUrl = jetty.getBaseUrl().toString() + "/" + "collection1";
       CloseableHttpClient httpClient = HttpClientUtil.createClient(new ModifiableSolrParams(), pool,
             false /* let client shutdown it*/);
-      client1 = getHttpSolrClient(fooUrl, httpClient);
-      client1.setConnectionTimeout(DEFAULT_CONNECTION_TIMEOUT);
+      client1 = getHttpSolrClient(fooUrl, httpClient, DEFAULT_CONNECTION_TIMEOUT);
     }
     final String barUrl = yetty.getBaseUrl().toString() + "/" + "collection1";
     

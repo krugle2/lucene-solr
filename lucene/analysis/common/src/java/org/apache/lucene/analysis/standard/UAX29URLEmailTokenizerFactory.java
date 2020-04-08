@@ -30,8 +30,15 @@ import java.util.Map;
  *     &lt;tokenizer class="solr.UAX29URLEmailTokenizerFactory" maxTokenLength="255"/&gt;
  *   &lt;/analyzer&gt;
  * &lt;/fieldType&gt;</pre> 
+ *
+ * @since 3.1
+ * @lucene.spi {@value #NAME}
  */
 public class UAX29URLEmailTokenizerFactory extends TokenizerFactory {
+
+  /** SPI name */
+  public static final String NAME = "uax29UrlEmail";
+
   private final int maxTokenLength;
 
   /** Creates a new UAX29URLEmailTokenizerFactory */
@@ -41,6 +48,11 @@ public class UAX29URLEmailTokenizerFactory extends TokenizerFactory {
     if (!args.isEmpty()) {
       throw new IllegalArgumentException("Unknown parameters: " + args);
     }
+  }
+
+  /** Default ctor for compatibility with SPI */
+  public UAX29URLEmailTokenizerFactory() {
+    throw defaultCtorException();
   }
 
   @Override

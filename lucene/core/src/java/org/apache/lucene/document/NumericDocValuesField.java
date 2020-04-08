@@ -59,8 +59,18 @@ public class NumericDocValuesField extends Field {
    * @throws IllegalArgumentException if the field name is null
    */
   public NumericDocValuesField(String name, long value) {
+    this(name, Long.valueOf(value));
+  }
+
+  /**
+   * Creates a new DocValues field with the specified 64-bit long value
+   * @param name field name
+   * @param value 64-bit long value or <code>null</code> if the existing fields value should be removed on update
+   * @throws IllegalArgumentException if the field name is null
+   */
+  public NumericDocValuesField(String name, Long value) {
     super(name, TYPE);
-    fieldsData = Long.valueOf(value);
+    fieldsData = value;
   }
 
   /**
@@ -78,7 +88,7 @@ public class NumericDocValuesField extends Field {
    * alongside a range query that executes on points, such as
    * {@link LongPoint#newRangeQuery}.
    */
-  public static Query newRangeQuery(String field, long lowerValue, long upperValue) {
+  public static Query newSlowRangeQuery(String field, long lowerValue, long upperValue) {
     return new SortedNumericDocValuesRangeQuery(field, lowerValue, upperValue) {
       @Override
       SortedNumericDocValues getValues(LeafReader reader, String field) throws IOException {
@@ -99,7 +109,7 @@ public class NumericDocValuesField extends Field {
    * alongside a range query that executes on points, such as
    * {@link LongPoint#newExactQuery}.
    */
-  public static Query newExactQuery(String field, long value) {
-    return newRangeQuery(field, value, value);
+  public static Query newSlowExactQuery(String field, long value) {
+    return newSlowRangeQuery(field, value, value);
   }
 }

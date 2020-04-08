@@ -21,13 +21,18 @@ import java.util.Map;
 import java.util.Properties;
 
 import com.google.common.base.Strings;
+import org.apache.solr.common.StringUtils;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.core.CoreDescriptor;
 import org.apache.solr.util.PropertiesUtil;
 
+/**
+ * SolrCloud metadata attached to a {@link CoreDescriptor}.
+ */
 public class CloudDescriptor {
 
-  private final CoreDescriptor cd;
+  private final CoreDescriptor cd; // back-reference
+
   private String shardId;
   private String collectionName;
   private String roles = null;
@@ -40,11 +45,18 @@ public class CloudDescriptor {
   // set to true once a core has registered in zk
   // set to false on detecting a session expiration
   private volatile boolean hasRegistered = false;
-  volatile Replica.State lastPublished = Replica.State.ACTIVE;
+  private volatile Replica.State lastPublished = Replica.State.ACTIVE;
 
   public static final String NUM_SHARDS = "numShards";
+  
+  public static final String REPLICA_TYPE = "replicaType";
+  
+  /**
+   * The type of replica this core hosts
+   */
+  private final Replica.Type replicaType;
 
-  public CloudDescriptor(String coreName, Properties props, CoreDescriptor cd) {
+  public CloudDescriptor(CoreDescriptor cd, String coreName, Properties props) {
     this.cd = cd;
     this.shardId = props.getProperty(CoreDescriptor.CORE_SHARD, null);
     if (Strings.isNullOrEmpty(shardId))
@@ -56,12 +68,21 @@ public class CloudDescriptor {
     if (Strings.isNullOrEmpty(nodeName))
       this.nodeName = null;
     this.numShards = PropertiesUtil.toInteger(props.getProperty(CloudDescriptor.NUM_SHARDS), null);
-
+    String replicaTypeStr = props.getProperty(CloudDescriptor.REPLICA_TYPE);
+    if (Strings.isNullOrEmpty(replicaTypeStr)) {
+      this.replicaType = Replica.Type.NRT;
+    } else {
+      this.replicaType = Replica.Type.valueOf(replicaTypeStr);
+    }
     for (String propName : props.stringPropertyNames()) {
       if (propName.startsWith(ZkController.COLLECTION_PARAM_PREFIX)) {
         collectionParams.put(propName.substring(ZkController.COLLECTION_PARAM_PREFIX.length()), props.getProperty(propName));
       }
     }
+  }
+  
+  public boolean requiresTransactionLog() {
+    return this.replicaType != Replica.Type.PULL;
   }
   
   public Replica.State getLastPublished() {
@@ -134,5 +155,28 @@ public class CloudDescriptor {
     this.nodeName = nodeName;
     if(nodeName==null) cd.getPersistableStandardProperties().remove(CoreDescriptor.CORE_NODE_NAME);
     else cd.getPersistableStandardProperties().setProperty(CoreDescriptor.CORE_NODE_NAME, nodeName);
+  }
+
+  public void reload(CloudDescriptor reloadFrom) {
+    if (reloadFrom == null) return;
+
+    setShardId(StringUtils.isEmpty(reloadFrom.getShardId()) ? getShardId() : reloadFrom.getShardId());
+    setCollectionName(StringUtils.isEmpty(reloadFrom.getCollectionName()) ? getCollectionName() : reloadFrom.getCollectionName());
+    setRoles(StringUtils.isEmpty(reloadFrom.getRoles()) ? getRoles() : reloadFrom.getRoles());
+    if (reloadFrom.getNumShards() != null) {
+      setNumShards(reloadFrom.getNumShards());
+    }
+    setCoreNodeName(StringUtils.isEmpty(reloadFrom.getCoreNodeName()) ? getCoreNodeName() : reloadFrom.getCoreNodeName());
+    setLeader(reloadFrom.isLeader);
+    setHasRegistered(reloadFrom.hasRegistered);
+    setLastPublished(reloadFrom.getLastPublished());
+
+    for (Map.Entry<String, String> ent : reloadFrom.getParams().entrySet()) {
+      collectionParams.put(ent.getKey(), ent.getValue());
+    }
+  }
+
+  public Replica.Type getReplicaType() {
+    return replicaType;
   }
 }

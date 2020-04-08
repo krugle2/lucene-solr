@@ -23,6 +23,7 @@ import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.search.SortField;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.request.SolrRequestInfo;
 import org.apache.solr.response.TextResponseWriter;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.function.FileFloatSource;
@@ -35,9 +36,6 @@ import org.apache.solr.uninverting.UninvertingReader.Type;
  * <li>It's OK to have some documents without a keyField in the file (defVal is used as the default)</li>
  * <li>It's OK for a keyField value to point to multiple documents (no uniqueness requirement)</li>
  * </ul>
- * <code>valType</code> is a reference to another fieldType to define the value type of this field
- * (must currently be TrieFloatField or LegacyFloatField (valType="pfloat|float|tfloat") if used).
- * This parameter has never been implemented. As of Solr 3.6/4.0 it is optional and can be omitted.
  *
  * The format of the external file is simply newline separated keyFieldValue=floatValue.
  * <br>Example:
@@ -57,7 +55,6 @@ import org.apache.solr.uninverting.UninvertingReader.Type;
  * @see ExternalFileFieldReloader
  */
 public class ExternalFileField extends FieldType implements SchemaAware {
-  private FieldType ftype;
   private String keyFieldName;
   private IndexSchema schema;
   private float defVal;
@@ -65,16 +62,6 @@ public class ExternalFileField extends FieldType implements SchemaAware {
   @Override
   protected void init(IndexSchema schema, Map<String, String> args) {
     restrictProps(SORT_MISSING_FIRST | SORT_MISSING_LAST);
-    // valType has never been used for anything except to throw an error, so make it optional since the
-    // code (see getValueSource) gives you a FileFloatSource.
-    String ftypeS = args.remove("valType");
-    if (ftypeS != null) {
-      ftype = schema.getFieldTypes().get(ftypeS);
-      if (ftype != null && !(ftype instanceof TrieFloatField)) {
-        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
-            "Only float (TrieFloatField) is currently supported as external field type.  Got " + ftypeS);
-      }
-    }
     keyFieldName = args.remove("keyField");
     String defValS = args.remove("defVal");
     defVal = defValS == null ? 0 : Float.parseFloat(defValS);
@@ -109,7 +96,7 @@ public class ExternalFileField extends FieldType implements SchemaAware {
    * @return a FileFloatSource
    */
   public FileFloatSource getFileFloatSource(SchemaField field) {
-    return getFileFloatSource(field, schema.getResourceLoader().getDataDir());
+    return getFileFloatSource(field, SolrRequestInfo.getRequestInfo().getReq().getCore().getDataDir());
   }
 
   /**
@@ -136,5 +123,10 @@ public class ExternalFileField extends FieldType implements SchemaAware {
   @Override
   public void inform(IndexSchema schema) {
     this.schema = schema;
+    
+    if (keyFieldName != null && schema.getFieldType(keyFieldName).isPointField()) {
+      throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
+          "keyField '" + keyFieldName + "' has a Point field type, which is not supported.");
+    }
   }
 }

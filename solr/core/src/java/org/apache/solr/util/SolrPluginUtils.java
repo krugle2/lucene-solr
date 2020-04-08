@@ -35,7 +35,6 @@ import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 import org.apache.lucene.document.Document;
-import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
@@ -44,8 +43,6 @@ import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.Sort;
-import org.apache.solr.common.SolrDocument;
-import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.MapSolrParams;
@@ -66,7 +63,6 @@ import org.apache.solr.request.json.RequestUtil;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
-import org.apache.solr.search.CacheRegenerator;
 import org.apache.solr.search.DocIterator;
 import org.apache.solr.search.DocList;
 import org.apache.solr.search.DocSet;
@@ -74,7 +70,6 @@ import org.apache.solr.search.FieldParams;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.QueryParsing;
 import org.apache.solr.search.ReturnFields;
-import org.apache.solr.search.SolrCache;
 import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.search.SolrQueryParser;
 import org.apache.solr.search.SortSpecParsing;
@@ -91,17 +86,7 @@ import static org.apache.solr.core.PluginInfo.INVARIANTS;
 import static org.apache.solr.core.RequestParams.USEPARAM;
 
 /**
- * <p>Utilities that may be of use to RequestHandlers.</p>
- *
- * <p>
- * Many of these functions have code that was stolen/mutated from
- * StandardRequestHandler.
- * </p>
- *
- * <p>:TODO: refactor StandardRequestHandler to use these utilities</p>
- *
- * <p>:TODO: Many "standard" functionality methods are not cognisant of
- * default parameter settings.
+ * Utilities that may be of use to RequestHandlers.
  */
 public class SolrPluginUtils {
 
@@ -248,7 +233,7 @@ public class SolrPluginUtils {
                                           SolrQueryRequest req,
                                           SolrQueryResponse res) throws IOException {
     SolrIndexSearcher searcher = req.getSearcher();
-    if(!searcher.enableLazyFieldLoading) {
+    if(!searcher.getDocFetcher().isLazyFieldLoadingEnabled()) {
       // nothing to do
       return;
     }
@@ -583,8 +568,8 @@ public class SolrPluginUtils {
         String[] fieldAndSlopVsBoost = caratPattern.split(s);
         String[] fieldVsSlop = tildePattern.split(fieldAndSlopVsBoost[0]);
         String field = fieldVsSlop[0];
-        int slop  = (2 == fieldVsSlop.length) ? Integer.valueOf(fieldVsSlop[1]) : defaultSlop;
-        Float boost = (1 == fieldAndSlopVsBoost.length) ? 1  : Float.valueOf(fieldAndSlopVsBoost[1]);
+        int slop  = (2 == fieldVsSlop.length) ? Integer.parseInt(fieldVsSlop[1]) : defaultSlop;
+        float boost = (1 == fieldAndSlopVsBoost.length) ? 1  : Float.parseFloat(fieldAndSlopVsBoost[1]);
         FieldParams fp = new FieldParams(field,wordGrams,slop,boost);
         out.add(fp);
       }
@@ -693,7 +678,11 @@ public class SolrPluginUtils {
       spec = spaceAroundLessThanPattern.matcher(spec).replaceAll("<");
       for (String s : spacePattern.split(spec)) {
         String[] parts = lessThanPattern.split(s,0);
-        int upperBound = Integer.parseInt(parts[0]);
+        if (parts.length < 2) {
+          throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+              "Invalid 'mm' spec: '" + s + "'. Expecting values before and after '<'");
+        }
+        int upperBound = checkedParseInt(parts[0], "Invalid 'mm' spec. Expecting an integer.");
         if (optionalClauseCount <= upperBound) {
           return result;
         } else {
@@ -709,17 +698,37 @@ public class SolrPluginUtils {
     if (-1 < spec.indexOf('%')) {
       /* percentage - assume the % was the last char.  If not, let Integer.parseInt fail. */
       spec = spec.substring(0,spec.length()-1);
-      int percent = Integer.parseInt(spec);
+      int percent = checkedParseInt(spec,
+          "Invalid 'mm' spec. Expecting an integer.");
       float calc = (result * percent) * (1/100f);
       result = calc < 0 ? result + (int)calc : (int)calc;
     } else {
-      int calc = Integer.parseInt(spec);
+      int calc = checkedParseInt(spec, "Invalid 'mm' spec. Expecting an integer.");
       result = calc < 0 ? result + calc : calc;
     }
 
     return (optionalClauseCount < result ?
             optionalClauseCount : (result < 0 ? 0 : result));
 
+  }
+
+  /**
+   * Wrapper of {@link Integer#parseInt(String)} that wraps any {@link NumberFormatException} in a
+   * {@link SolrException} with HTTP 400 Bad Request status.
+   *
+   * @param input the string to parse
+   * @param errorMessage the error message for any SolrException
+   * @return the integer value of {@code input}
+   * @throws SolrException when parseInt throws NumberFormatException
+   */
+  private static int checkedParseInt(String input, String errorMessage) {
+    int percent;
+    try {
+      percent = Integer.parseInt(input);
+    } catch (NumberFormatException e) {
+      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, errorMessage, e);
+    }
+    return percent;
   }
 
 
@@ -915,12 +924,12 @@ public class SolrPluginUtils {
         Alias a = aliases.get(field);
 
         List<Query> disjuncts = new ArrayList<>();
-        for (String f : a.fields.keySet()) {
+        for (Map.Entry<String, Float> entry : a.fields.entrySet()) {
 
-          Query sub = getFieldQuery(f,queryText,quoted, false);
+          Query sub = getFieldQuery(entry.getKey(),queryText,quoted, false);
           if (null != sub) {
-            if (null != a.fields.get(f)) {
-              sub = new BoostQuery(sub, a.fields.get(f));
+            if (null != entry.getValue()) {
+              sub = new BoostQuery(sub, entry.getValue());
             }
             disjuncts.add(sub);
           }
@@ -987,84 +996,11 @@ public class SolrPluginUtils {
     return out;
   }
 
-  /**
-   * A CacheRegenerator that can be used whenever the items in the cache
-   * are not dependant on the current searcher.
-   *
-   * <p>
-   * Flat out copies the oldKey=&gt;oldVal pair into the newCache
-   * </p>
-   */
-  public static class IdentityRegenerator implements CacheRegenerator {
-    @Override
-    public boolean regenerateItem(SolrIndexSearcher newSearcher,
-                                  SolrCache newCache,
-                                  SolrCache oldCache,
-                                  Object oldKey,
-                                  Object oldVal)
-      throws IOException {
-
-      newCache.put(oldKey,oldVal);
-      return true;
-    }
-  }
-
-  /**
-   * Convert a DocList to a SolrDocumentList
-   *
-   * The optional param "ids" is populated with the lucene document id
-   * for each SolrDocument.
-   *
-   * @param docs The {@link org.apache.solr.search.DocList} to convert
-   * @param searcher The {@link org.apache.solr.search.SolrIndexSearcher} to use to load the docs from the Lucene index
-   * @param fields The names of the Fields to load
-   * @param ids A map to store the ids of the docs
-   * @return The new {@link org.apache.solr.common.SolrDocumentList} containing all the loaded docs
-   * @throws java.io.IOException if there was a problem loading the docs
-   * @since solr 1.4
-   */
-  public static SolrDocumentList docListToSolrDocumentList(
-      DocList docs,
-      SolrIndexSearcher searcher,
-      Set<String> fields,
-      Map<SolrDocument, Integer> ids ) throws IOException
-  {
-    IndexSchema schema = searcher.getSchema();
-
-    SolrDocumentList list = new SolrDocumentList();
-    list.setNumFound(docs.matches());
-    list.setMaxScore(docs.maxScore());
-    list.setStart(docs.offset());
-
-    DocIterator dit = docs.iterator();
-
-    while (dit.hasNext()) {
-      int docid = dit.nextDoc();
-
-      Document luceneDoc = searcher.doc(docid, fields);
-      SolrDocument doc = new SolrDocument();
-
-      for( IndexableField field : luceneDoc) {
-        if (null == fields || fields.contains(field.name())) {
-          SchemaField sf = schema.getField( field.name() );
-          doc.addField( field.name(), sf.getType().toObject( field ) );
-        }
-      }
-      if (docs.hasScores() && (null == fields || fields.contains("score"))) {
-        doc.addField("score", dit.score());
-      }
-
-      list.add( doc );
-
-      if( ids != null ) {
-        ids.put( doc, new Integer(docid) );
-      }
-    }
-    return list;
-  }
-
-
   public static void invokeSetters(Object bean, Iterable<Map.Entry<String,Object>> initArgs) {
+    invokeSetters(bean, initArgs, false);
+  }
+
+  public static void invokeSetters(Object bean, Iterable<Map.Entry<String,Object>> initArgs, boolean lenient) {
     if (initArgs == null) return;
     final Class<?> clazz = bean.getClass();
     for (Map.Entry<String,Object> entry : initArgs) {
@@ -1072,19 +1008,31 @@ public class SolrPluginUtils {
       String setterName = "set" + String.valueOf(Character.toUpperCase(key.charAt(0))) + key.substring(1);
       try {
         final Object val = entry.getValue();
-        final Method method = findSetter(clazz, setterName, key, val.getClass());
-        method.invoke(bean, val);
+        final Method method = findSetter(clazz, setterName, key, val.getClass(), lenient);
+        if (method != null) {
+          method.invoke(bean, val);
+        }
       } catch (InvocationTargetException | IllegalAccessException e1) {
+        if (lenient) {
+          continue;
+        }
         throw new RuntimeException("Error invoking setter " + setterName + " on class : " + clazz.getName(), e1);
+      }
+      catch (AssertionError ae) {
+        throw new RuntimeException("Error invoking setter " + setterName + " on class : " + clazz.getName()+
+            ". This might be a case of SOLR-12207", ae);
       }
     }
   }
 
-  private static Method findSetter(Class<?> clazz, String setterName, String key, Class<?> paramClazz) {
+  private static Method findSetter(Class<?> clazz, String setterName, String key, Class<?> paramClazz, boolean lenient) {
     BeanInfo beanInfo;
     try {
       beanInfo = Introspector.getBeanInfo(clazz);
     } catch (IntrospectionException ie) {
+      if (lenient) {
+        return null;
+      }
       throw new RuntimeException("Error getting bean info for class : " + clazz.getName(), ie);
     }
     for (final boolean matchParamClazz: new boolean[]{true, false}) {
@@ -1096,6 +1044,9 @@ public class SolrPluginUtils {
           return m;
         }
       }
+    }
+    if (lenient) {
+      return null;
     }
     throw new RuntimeException("No setter corrresponding to '" + key + "' in " + clazz.getName());
   }
@@ -1113,7 +1064,7 @@ public class SolrPluginUtils {
           StringBuilder builder = new StringBuilder();
           for (Map.Entry<Integer, String>entry : purposes.entrySet()) {
               if ((reqPurpose & entry.getKey()) != 0) {
-                  builder.append(entry.getValue() + ",");
+                  builder.append(entry.getValue()).append(',');
               }
           }
           if (builder.length() == 0) {
@@ -1123,6 +1074,41 @@ public class SolrPluginUtils {
           return builder.toString();
       }
       return UNKNOWN_VALUE;
+  }
+
+  private static final String[] purposeUnknown = new String[] { UNKNOWN_VALUE };
+
+  /**
+   * Given the integer purpose of a request generates a readable value corresponding
+   * the request purposes (there can be more than one on a single request). If
+   * there is a purpose parameter present that's not known this method will
+   * return a 1-element array containing {@value #UNKNOWN_VALUE}
+   * @param reqPurpose Numeric request purpose
+   * @return an array of purpose names.
+   */
+  public static String[] getRequestPurposeNames(Integer reqPurpose) {
+    if (reqPurpose != null) {
+      int valid = 0;
+      for (Map.Entry<Integer, String>entry : purposes.entrySet()) {
+        if ((reqPurpose & entry.getKey()) != 0) {
+          valid++;
+        }
+      }
+      if (valid == 0) {
+        return purposeUnknown;
+      } else {
+        String[] result = new String[valid];
+        int i = 0;
+        for (Map.Entry<Integer, String>entry : purposes.entrySet()) {
+          if ((reqPurpose & entry.getKey()) != 0) {
+            result[i] = entry.getValue();
+            i++;
+          }
+        }
+        return result;
+      }
+    }
+    return purposeUnknown;
   }
 
 }

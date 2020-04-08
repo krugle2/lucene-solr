@@ -81,7 +81,9 @@ import org.apache.solr.util.DateMathParser;
  * </blockquote>
  *
  * @see TrieField
+ * @deprecated Trie fields are deprecated as of Solr 7.0
  */
+@Deprecated
 public class TrieDateField extends TrieField implements DateValueFieldType {
   {
     this.type = NumberType.DATE;
@@ -94,8 +96,8 @@ public class TrieDateField extends TrieField implements DateValueFieldType {
 
   @Override
   public Object toNativeType(Object val) {
-    if (val instanceof String) {
-      return DateMathParser.parseMath(null, (String)val);
+    if (val instanceof CharSequence) {
+      return DateMathParser.parseMath(null, val.toString());
     }
     return super.toNativeType(val);
   }

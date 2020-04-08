@@ -32,14 +32,14 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.RandomIndexWriter;
-import org.apache.lucene.legacy.LegacyDoubleField;
-import org.apache.lucene.legacy.LegacyFloatField;
-import org.apache.lucene.legacy.LegacyIntField;
-import org.apache.lucene.legacy.LegacyLongField;
+import org.apache.solr.legacy.LegacyDoubleField;
+import org.apache.solr.legacy.LegacyFloatField;
+import org.apache.solr.legacy.LegacyIntField;
+import org.apache.solr.legacy.LegacyLongField;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.LuceneTestCase;
+import org.apache.solr.SolrTestCase;
 import org.apache.lucene.util.TestUtil;
 import org.apache.solr.index.SlowCompositeReaderWrapper;
 import org.junit.AfterClass;
@@ -55,7 +55,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 /** random assortment of tests against legacy numerics */
-public class TestLegacyFieldCache extends LuceneTestCase {
+public class TestLegacyFieldCache extends SolrTestCase {
   private static LeafReader reader;
   private static int NUM_DOCS;
   private static Directory directory;
@@ -95,10 +95,14 @@ public class TestLegacyFieldCache extends LuceneTestCase {
 
   @AfterClass
   public static void afterClass() throws Exception {
-    reader.close();
-    reader = null;
-    directory.close();
-    directory = null;
+    if (null != reader) {
+      reader.close();
+      reader = null;
+    }
+    if (null != directory) {
+      directory.close();
+      directory = null;
+    }
   }
 
   public void test() throws IOException {

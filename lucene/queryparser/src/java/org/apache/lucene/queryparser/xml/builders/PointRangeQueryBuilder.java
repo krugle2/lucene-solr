@@ -30,7 +30,8 @@ import org.w3c.dom.Element;
 /**
  * Creates a range query across 1D {@link PointValues}. The table below specifies the required
  * attributes and the defaults if optional attributes are omitted:
- * <table summary="supported attributes">
+ * <table>
+ * <caption>supported attributes</caption>
  * <tr>
  * <th>Attribute name</th>
  * <th>Values</th>
@@ -45,13 +46,13 @@ import org.w3c.dom.Element;
  * </tr>
  * <tr>
  * <td>lowerTerm</td>
- * <td>Specified by <tt>type</tt></td>
+ * <td>Specified by <code>type</code></td>
  * <td>No</td>
  * <td>Integer.MIN_VALUE Long.MIN_VALUE Float.NEGATIVE_INFINITY Double.NEGATIVE_INFINITY</td>
  * </tr>
  * <tr>
  * <td>upperTerm</td>
- * <td>Specified by <tt>type</tt></td>
+ * <td>Specified by <code>type</code></td>
  * <td>No</td>
  * <td>Integer.MAX_VALUE Long.MAX_VALUE Float.POSITIVE_INFINITY Double.POSITIVE_INFINITY</td>
  * </tr>
@@ -64,8 +65,8 @@ import org.w3c.dom.Element;
  * </table>
  * <p>
  * A {@link ParserException} will be thrown if an error occurs parsing the
- * supplied <tt>lowerTerm</tt> or <tt>upperTerm</tt> into the numeric type
- * specified by <tt>type</tt>.
+ * supplied <code>lowerTerm</code> or <code>upperTerm</code> into the numeric type
+ * specified by <code>type</code>.
  */
 public class PointRangeQueryBuilder implements QueryBuilder {
 
@@ -79,20 +80,20 @@ public class PointRangeQueryBuilder implements QueryBuilder {
     try {
       if (type.equalsIgnoreCase("int")) {
         return IntPoint.newRangeQuery(field,
-            (lowerTerm == null ? Integer.MIN_VALUE : Integer.valueOf(lowerTerm)),
-            (upperTerm == null ? Integer.MAX_VALUE : Integer.valueOf(upperTerm)));
+            (lowerTerm == null ? Integer.MIN_VALUE : Integer.parseInt(lowerTerm)),
+            (upperTerm == null ? Integer.MAX_VALUE : Integer.parseInt(upperTerm)));
       } else if (type.equalsIgnoreCase("long")) {
         return LongPoint.newRangeQuery(field,
-            (lowerTerm == null ? Long.MIN_VALUE : Long.valueOf(lowerTerm)),
-            (upperTerm == null ? Long.MAX_VALUE : Long.valueOf(upperTerm)));
+            (lowerTerm == null ? Long.MIN_VALUE : Long.parseLong(lowerTerm)),
+            (upperTerm == null ? Long.MAX_VALUE : Long.parseLong(upperTerm)));
       } else if (type.equalsIgnoreCase("double")) {
         return DoublePoint.newRangeQuery(field,
-            (lowerTerm == null ? Double.NEGATIVE_INFINITY : Double.valueOf(lowerTerm)),
-            (upperTerm == null ? Double.POSITIVE_INFINITY : Double.valueOf(upperTerm)));
+            (lowerTerm == null ? Double.NEGATIVE_INFINITY : Double.parseDouble(lowerTerm)),
+            (upperTerm == null ? Double.POSITIVE_INFINITY : Double.parseDouble(upperTerm)));
       } else if (type.equalsIgnoreCase("float")) {
         return FloatPoint.newRangeQuery(field,
-            (lowerTerm == null ? Float.NEGATIVE_INFINITY : Float.valueOf(lowerTerm)),
-            (upperTerm == null ? Float.POSITIVE_INFINITY : Float.valueOf(upperTerm)));
+            (lowerTerm == null ? Float.NEGATIVE_INFINITY : Float.parseFloat(lowerTerm)),
+            (upperTerm == null ? Float.POSITIVE_INFINITY : Float.parseFloat(upperTerm)));
       } else {
         throw new ParserException("type attribute must be one of: [long, int, double, float]");
       }

@@ -71,12 +71,12 @@ public class PointType extends CoordinateFieldType implements SpatialQueryable {
     String[] point = parseCommaSeparatedList(externalVal, dimension);
 
     // TODO: this doesn't currently support polyFields as sub-field types
-    List<IndexableField> f = new ArrayList<>(dimension+1);
+    List<IndexableField> f = new ArrayList<>((dimension*2)+1);
 
     if (field.indexed()) {
       for (int i=0; i<dimension; i++) {
         SchemaField sf = subField(field, i, schema);
-        f.add(sf.createField(point[i]));
+        f.addAll(sf.createFields(point[i]));
       }
     }
 
@@ -84,7 +84,7 @@ public class PointType extends CoordinateFieldType implements SpatialQueryable {
       String storedVal = externalVal;  // normalize or not?
       f.add(createField(field.getName(), storedVal, StoredField.TYPE));
     }
-    
+
     return f;
   }
 
@@ -128,7 +128,7 @@ public class PointType extends CoordinateFieldType implements SpatialQueryable {
   /**
    * Care should be taken in calling this with higher order dimensions for performance reasons.
    */
-  public Query getRangeQuery(QParser parser, SchemaField field, String part1, String part2, boolean minInclusive, boolean maxInclusive) {
+  protected Query getSpecializedRangeQuery(QParser parser, SchemaField field, String part1, String part2, boolean minInclusive, boolean maxInclusive) {
     //Query could look like: [x1,y1 TO x2,y2] for 2 dimension, but could look like: [x1,y1,z1 TO x2,y2,z2], and can be extrapolated to n-dimensions
     //thus, this query essentially creates a box, cube, etc.
     String[] p1 = parseCommaSeparatedList(part1, dimension);
@@ -154,6 +154,14 @@ public class PointType extends CoordinateFieldType implements SpatialQueryable {
       bq.add(tq, BooleanClause.Occur.MUST);
     }
     return bq.build();
+  }
+  
+  @Override
+  protected void checkSupportsDocValues() {
+    // DocValues supported only when enabled at the fieldType 
+    if (!hasProperty(DOC_VALUES)) {
+      throw new UnsupportedOperationException("PointType can't have docValues=true in the field definition, use docValues=true in the fieldType definition, or in subFieldType/subFieldSuffix");
+    }
   }
 
   /**

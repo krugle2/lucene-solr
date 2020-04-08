@@ -41,6 +41,8 @@ import org.apache.solr.common.util.SolrjNamedThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.solr.common.params.CommonParams.ID;
+
 /**
  *  The executor function wraps a stream with Tuples containing Streaming Expressions
  *  and executes them in parallel. Sample syntax:
@@ -48,11 +50,12 @@ import org.slf4j.LoggerFactory;
  *  executor(thread=10, topic(storedExpressions, q="*:*", fl="expr_s, id", id="topic1"))
  *
  *  The Streaming Expression to execute is taken from the expr field in the Tuples.
+ * @since 6.3.0
  */
 
 public class ExecutorStream extends TupleStream implements Expressible {
 
-  private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   private TupleStream stream;
 
@@ -145,7 +148,7 @@ public class ExecutorStream extends TupleStream implements Expressible {
     try {
       executorService.awaitTermination(Long.MAX_VALUE, TimeUnit.SECONDS);
     } catch(InterruptedException e) {
-      logger.error("Interrupted while waiting for termination", e);
+      log.error("Interrupted while waiting for termination", e);
     }
   }
 
@@ -197,7 +200,7 @@ public class ExecutorStream extends TupleStream implements Expressible {
       }
 
       String expr = tuple.getString("expr_s");
-      Object id = tuple.get("id");
+      Object id = tuple.get(ID);
       TupleStream stream = null;
 
       try {
@@ -211,12 +214,12 @@ public class ExecutorStream extends TupleStream implements Expressible {
           }
         }
       } catch (Exception e) {
-        logger.error("Executor Error: id="+id+" expr_s="+expr, e);
+        log.error("Executor Error: id="+id+" expr_s="+expr, e);
       } finally {
         try {
           stream.close();
         } catch (Exception e1) {
-          logger.error("Executor Error", e1);
+          log.error("Executor Error", e1);
         }
       }
     }

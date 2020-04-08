@@ -16,6 +16,13 @@
  */
 package org.apache.solr.handler.component;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.grouping.SearchGroup;
 import org.apache.lucene.search.grouping.TopGroups;
@@ -23,27 +30,21 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.util.NamedList;
-import org.apache.solr.util.RTimer;
 import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestInfo;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.search.CursorMark;
 import org.apache.solr.search.DocListAndSet;
+import org.apache.solr.search.DocSlice;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.QueryCommand;
 import org.apache.solr.search.QueryResult;
-import org.apache.solr.search.SortSpec;
 import org.apache.solr.search.RankQuery;
+import org.apache.solr.search.SortSpec;
 import org.apache.solr.search.grouping.GroupingSpecification;
 import org.apache.solr.search.grouping.distributed.command.QueryCommandResult;
-
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Map;
-import java.util.Set;
+import org.apache.solr.util.RTimer;
 
 /**
  * This class is experimental and will be changing in the future.
@@ -60,6 +61,7 @@ public class ResponseBuilder
   public boolean doExpand;
   public boolean doStats;
   public boolean doTerms;
+  public boolean doAnalytics;
   public MergeStrategy mergeFieldHandler;
 
   private boolean needDocList = false;
@@ -138,6 +140,13 @@ public class ResponseBuilder
   public List<ShardRequest> finished;  // requests that have received responses from all shards
   public String shortCircuitedURL;
 
+  /**
+   * This function will return true if this was a distributed search request.
+   */
+  public boolean isDistributed() {
+    return this.isDistrib;
+  }
+
   public int getShardNum(String shard) {
     for (int i = 0; i < shards.length; i++) {
       if (shards[i] == shard || shards[i].equals(shard)) return i;
@@ -157,8 +166,6 @@ public class ResponseBuilder
     }
   }
 
-  public GlobalCollectionStat globalCollectionStat;
-
   public Map<Object, ShardDoc> resultIds;
   // Maps uniqueKeyValue to ShardDoc, which may be used to
   // determine order of the doc or uniqueKey in the final
@@ -173,6 +180,8 @@ public class ResponseBuilder
   StatsInfo _statsInfo;
   TermsComponent.TermsHelper _termsHelper;
   SimpleOrderedMap<List<NamedList<Object>>> _pivots;
+  Object _analyticsRequestManager;
+  boolean _isOlapAnalytics;
 
   // Context fields for grouping
   public final Map<String, Collection<SearchGroup<BytesRef>>> mergedSearchGroups = new HashMap<>();
@@ -406,23 +415,11 @@ public class ResponseBuilder
     this.timer = timer;
   }
 
-
-  public static class GlobalCollectionStat {
-    public final long numDocs;
-
-    public final Map<String, Long> dfMap;
-
-    public GlobalCollectionStat(int numDocs, Map<String, Long> dfMap) {
-      this.numDocs = numDocs;
-      this.dfMap = dfMap;
-    }
-  }
-
   /**
    * Creates a SolrIndexSearcher.QueryCommand from this
    * ResponseBuilder.  TimeAllowed is left unset.
    */
-  public QueryCommand getQueryCommand() {
+  public QueryCommand createQueryCommand() {
     QueryCommand cmd = new QueryCommand();
     cmd.setQuery(wrap(getQuery()))
             .setFilterList(getFilters())
@@ -450,7 +447,11 @@ public class ResponseBuilder
   public void setResult(QueryResult result) {
     setResults(result.getDocListAndSet());
     if (result.isPartialResults()) {
-      rsp.getResponseHeader().add(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY, Boolean.TRUE);
+      rsp.getResponseHeader().asShallowMap()
+          .put(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY, Boolean.TRUE);
+      if(getResults() != null && getResults().docList==null) {
+        getResults().docList = new DocSlice(0, 0, new int[] {}, new float[] {}, 0, 0);
+      }
     }
     final Boolean segmentTerminatedEarly = result.getSegmentTerminatedEarly();
     if (segmentTerminatedEarly != null) {
@@ -481,5 +482,29 @@ public class ResponseBuilder
   }
   public void setNextCursorMark(CursorMark nextCursorMark) {
     this.nextCursorMark = nextCursorMark;
+  }
+
+  public void setAnalytics(boolean doAnalytics) {
+    this.doAnalytics = doAnalytics;
+  }
+
+  public boolean isAnalytics() {
+    return this.doAnalytics;
+  }
+
+  public void setAnalyticsRequestManager(Object analyticsRequestManager) {
+    this._analyticsRequestManager = analyticsRequestManager;
+  }
+
+  public Object getAnalyticsRequestManager() {
+    return this._analyticsRequestManager;
+  }
+
+  public void setOlapAnalytics(boolean isOlapAnalytics) {
+    this._isOlapAnalytics = isOlapAnalytics;
+  }
+
+  public boolean isOlapAnalytics() {
+    return this._isOlapAnalytics;
   }
 }

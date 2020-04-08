@@ -23,8 +23,6 @@ import java.nio.file.Paths;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.IntPoint;
-import org.apache.lucene.index.IndexWriter;
-import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.store.BaseDirectoryWrapper;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -59,6 +57,7 @@ public class TestManyPointsInOldIndex extends LuceneTestCase {
   }
 
   public void testCheckOldIndex() throws IOException {
+    assumeTrue("Reenable when 7.0 is released", false);
     Path path = createTempDir("manypointsindex");
     InputStream resource = getClass().getResourceAsStream("manypointsindex.zip");
     assertNotNull("manypointsindex not found", resource);

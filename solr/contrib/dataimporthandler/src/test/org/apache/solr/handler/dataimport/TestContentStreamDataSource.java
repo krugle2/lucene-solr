@@ -52,13 +52,16 @@ public class TestContentStreamDataSource extends AbstractDataImportHandlerTestCa
     super.setUp();
     instance = new SolrInstance("inst", null);
     instance.setUp();
-    jetty = createJetty(instance);
+    jetty = createAndStartJetty(instance);
   }
   
   @Override
   @After
   public void tearDown() throws Exception {
-    jetty.stop();
+    if (null != jetty) {
+      jetty.stop();
+      jetty = null;
+    }
     super.tearDown();
   }
 
@@ -92,7 +95,7 @@ public class TestContentStreamDataSource extends AbstractDataImportHandlerTestCa
     try (HttpSolrClient solrServer = getHttpSolrClient(buildUrl(jetty.getLocalPort(), "/solr/collection1"))) {
       solrServer.request(req);
       Thread.sleep(100);
-      ModifiableSolrParams queryAll = params("q", "*");
+      ModifiableSolrParams queryAll = params("q", "*", "df", "desc");
       QueryResponse qres = solrServer.query(queryAll);
       SolrDocumentList results = qres.getResults();
       assertEquals(0, results.getNumFound());
@@ -106,10 +109,10 @@ public class TestContentStreamDataSource extends AbstractDataImportHandlerTestCa
         Thread.sleep(500);
       }
     }
-    fail("Commit should have occured but it did not");
+    fail("Commit should have occurred but it did not");
   }
   
-  private class SolrInstance {
+  private static class SolrInstance {
     String name;
     Integer port;
     File homeDir;
@@ -173,7 +176,7 @@ public class TestContentStreamDataSource extends AbstractDataImportHandlerTestCa
 
   }
 
-  private JettySolrRunner createJetty(SolrInstance instance) throws Exception {
+  private JettySolrRunner createAndStartJetty(SolrInstance instance) throws Exception {
     Properties nodeProperties = new Properties();
     nodeProperties.setProperty("solr.data.dir", instance.getDataDir());
     JettySolrRunner jetty = new JettySolrRunner(instance.getHomeDir(), nodeProperties, buildJettyConfig("/solr"));

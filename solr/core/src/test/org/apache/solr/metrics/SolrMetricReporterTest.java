@@ -20,15 +20,15 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 
-import org.apache.lucene.util.LuceneTestCase;
 import org.apache.lucene.util.TestUtil;
+import org.apache.solr.SolrTestCaseJ4;
 import org.apache.solr.common.params.CoreAdminParams;
 import org.apache.solr.core.PluginInfo;
 import org.apache.solr.metrics.reporters.MockMetricReporter;
 import org.apache.solr.schema.FieldType;
 import org.junit.Test;
 
-public class SolrMetricReporterTest extends LuceneTestCase {
+public class SolrMetricReporterTest extends SolrTestCaseJ4 {
 
   @Test
   public void testInit() throws Exception {
@@ -42,6 +42,7 @@ public class SolrMetricReporterTest extends LuceneTestCase {
     Map<String, Object> attrs = new HashMap<>();
     attrs.put(FieldType.CLASS_NAME, MockMetricReporter.class.getName());
     attrs.put(CoreAdminParams.NAME, TestUtil.randomUnicodeString(random));
+    attrs.put("enabled", random.nextBoolean());
 
     boolean shouldDefineConfigurable = random.nextBoolean();
     String configurable = TestUtil.randomUnicodeString(random);

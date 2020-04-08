@@ -14,11 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
- 
-/** 
- * Utilities used by analytics component
+
+/**
+ * Utility classes for the analytics component.
  */
 package org.apache.solr.analytics.util;
-
 
 

@@ -24,6 +24,7 @@ import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.util.BytesRef;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.SimpleParams;
 import org.apache.solr.common.params.SolrParams;
@@ -109,12 +110,12 @@ public class SimpleQParserPlugin extends QParserPlugin {
 
       if (queryFields.isEmpty()) {
         // It qf is not specified setup up the queryFields map to use the defaultField.
-        String defaultField = QueryParsing.getDefaultField(req.getSchema(), defaultParams.get(CommonParams.DF));
+        String defaultField = defaultParams.get(CommonParams.DF);
 
         if (defaultField == null) {
           // A query cannot be run without having a field or set of fields to run against.
-          throw new IllegalStateException("Neither " + SimpleParams.QF + ", " + CommonParams.DF
-              + ", nor the default search field are present.");
+          throw new IllegalStateException("Neither " + SimpleParams.QF + " nor " + CommonParams.DF
+              + " are present.");
         }
 
         queryFields.put(defaultField, 1.0F);
@@ -154,7 +155,7 @@ public class SimpleQParserPlugin extends QParserPlugin {
       parser = new SolrSimpleQueryParser(req.getSchema().getQueryAnalyzer(), queryFields, enabledOps, this, schema);
 
       // Set the default operator to be either 'AND' or 'OR' for the query.
-      QueryParser.Operator defaultOp = QueryParsing.getQueryParserDefaultOperator(req.getSchema(), defaultParams.get(QueryParsing.OP));
+      QueryParser.Operator defaultOp = QueryParsing.parseOP(defaultParams.get(QueryParsing.OP));
 
       if (defaultOp == QueryParser.Operator.AND) {
         parser.setDefaultOperator(BooleanClause.Occur.MUST);
@@ -186,25 +187,29 @@ public class SimpleQParserPlugin extends QParserPlugin {
       for (Map.Entry<String, Float> entry : weights.entrySet()) {
         String field = entry.getKey();
         FieldType type = schema.getFieldType(field);
-        Query prefix;
+        Query prefix = null;
 
         if (type instanceof TextField) {
           // If the field type is a TextField then use the multi term analyzer.
           Analyzer analyzer = ((TextField)type).getMultiTermAnalyzer();
-          String term = TextField.analyzeMultiTerm(field, text, analyzer).utf8ToString();
-          SchemaField sf = schema.getField(field);
-          prefix = sf.getType().getPrefixQuery(qParser, sf, term);
+          BytesRef termBytes = TextField.analyzeMultiTerm(field, text, analyzer);
+          if (termBytes != null) {
+            String term = termBytes.utf8ToString();
+            SchemaField sf = schema.getField(field);
+            prefix = sf.getType().getPrefixQuery(qParser, sf, term);
+          }
         } else {
           // If the type is *not* a TextField don't do any analysis.
           SchemaField sf = schema.getField(field);
           prefix = type.getPrefixQuery(qParser, sf, text);
         }
-
-        float boost = entry.getValue();
-        if (boost != 1f) {
-          prefix = new BoostQuery(prefix, boost);
+        if (prefix != null) {
+          float boost = entry.getValue();
+          if (boost != 1f) {
+            prefix = new BoostQuery(prefix, boost);
+          }
+          bq.add(prefix, BooleanClause.Occur.SHOULD);
         }
-        bq.add(prefix, BooleanClause.Occur.SHOULD);
       }
 
       return simplify(bq.build());
@@ -217,23 +222,27 @@ public class SimpleQParserPlugin extends QParserPlugin {
       for (Map.Entry<String, Float> entry : weights.entrySet()) {
         String field = entry.getKey();
         FieldType type = schema.getFieldType(field);
-        Query fuzzy;
+        Query fuzzy = null;
 
         if (type instanceof TextField) {
           // If the field type is a TextField then use the multi term analyzer.
           Analyzer analyzer = ((TextField)type).getMultiTermAnalyzer();
-          String term = TextField.analyzeMultiTerm(field, text, analyzer).utf8ToString();
-          fuzzy = new FuzzyQuery(new Term(entry.getKey(), term), fuzziness);
+          BytesRef termBytes = TextField.analyzeMultiTerm(field, text, analyzer);
+          if (termBytes != null) {
+            String term = termBytes.utf8ToString();
+            fuzzy = new FuzzyQuery(new Term(entry.getKey(), term), fuzziness);
+          }
         } else {
           // If the type is *not* a TextField don't do any analysis.
           fuzzy = new FuzzyQuery(new Term(entry.getKey(), text), fuzziness);
         }
-
-        float boost = entry.getValue();
-        if (boost != 1f) {
-          fuzzy = new BoostQuery(fuzzy, boost);
+        if (fuzzy != null) {
+          float boost = entry.getValue();
+          if (boost != 1f) {
+            fuzzy = new BoostQuery(fuzzy, boost);
+          }
+          bq.add(fuzzy, BooleanClause.Occur.SHOULD);
         }
-        bq.add(fuzzy, BooleanClause.Occur.SHOULD);
       }
 
       return simplify(bq.build());

@@ -16,15 +16,15 @@
  */
 package org.apache.solr.ltr.norm;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.solr.SolrTestCaseJ4;
 import org.apache.solr.core.SolrResourceLoader;
 import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class TestMinMaxNormalizer {
 
@@ -34,12 +34,13 @@ public class TestMinMaxNormalizer {
       float expectedMin, float expectedMax) {
     final Normalizer n = Normalizer.getInstance(
         solrResourceLoader,
-        MinMaxNormalizer.class.getCanonicalName(),
+        MinMaxNormalizer.class.getName(),
         params);
     assertTrue(n instanceof MinMaxNormalizer);
     final MinMaxNormalizer mmn = (MinMaxNormalizer)n;
     assertEquals(mmn.getMin(), expectedMin, 0.0);
     assertEquals(mmn.getMax(), expectedMax, 0.0);
+    assertEquals("{min="+expectedMin+", max="+expectedMax+"}", mmn.paramsToMap().toString());
     return n;
   }
 
@@ -86,14 +87,10 @@ public class TestMinMaxNormalizer {
     final NormalizerException expectedException =
         new NormalizerException("MinMax Normalizer delta must not be zero "
             + "| min = 10.0,max = 10.0,delta = 0.0");
-    try {
-        implTestMinMax(params,
-              10.0f,
-              10.0f);
-        fail("testMinMaxNormalizerMinEqualToMax failed to throw exception: "+expectedException);
-    } catch(NormalizerException actualException) {
-        assertEquals(expectedException.toString(), actualException.toString());
-    }
+    NormalizerException ex = SolrTestCaseJ4.expectThrows(NormalizerException.class,
+        () -> implTestMinMax(params, 10.0f, 10.0f)
+    );
+    assertEquals(expectedException.toString(), ex.toString());
   }
 
   @Test
@@ -116,5 +113,20 @@ public class TestMinMaxNormalizer {
     assertEquals((value - 5f) / (10f - 5f), n.normalize(value), 0.0001);
     value = 5;
     assertEquals((value - 5f) / (10f - 5f), n.normalize(value), 0.0001);
+  }
+
+  @Test
+  public void testParamsToMap() {
+    final MinMaxNormalizer n1 = new MinMaxNormalizer();
+    n1.setMin(5.0f);
+    n1.setMax(10.0f);
+
+    final Map<String,Object> params = n1.paramsToMap();
+    final MinMaxNormalizer n2 = (MinMaxNormalizer) Normalizer.getInstance(
+        new SolrResourceLoader(),
+        MinMaxNormalizer.class.getName(),
+        params);
+    assertEquals(n1.getMin(), n2.getMin(), 1e-6);
+    assertEquals(n1.getMax(), n2.getMax(), 1e-6);
   }
 }

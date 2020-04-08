@@ -412,7 +412,7 @@ public abstract class FieldComparator<T> {
   public static final class RelevanceComparator extends FieldComparator<Float> implements LeafFieldComparator {
     private final float[] scores;
     private float bottom;
-    private Scorer scorer;
+    private Scorable scorer;
     private float topValue;
 
     /** Creates a new comparator based on relevance for {@code numHits}. */
@@ -454,7 +454,7 @@ public abstract class FieldComparator<T> {
     }
 
     @Override
-    public void setScorer(Scorer scorer) {
+    public void setScorer(Scorable scorer) {
       // wrap with a ScoreCachingWrappingScorer so that successive calls to
       // score() will not incur score computation over and
       // over again.
@@ -546,7 +546,7 @@ public abstract class FieldComparator<T> {
     }
 
     @Override
-    public void setScorer(Scorer scorer) {}
+    public void setScorer(Scorable scorer) {}
   }
   
   /** Sorts by field's natural Term sort order, using
@@ -818,7 +818,7 @@ public abstract class FieldComparator<T> {
     }
 
     @Override
-    public void setScorer(Scorer scorer) {}
+    public void setScorer(Scorable scorer) {}
   }
   
   /** Sorts by field's natural Term sort order.  All
@@ -883,14 +883,6 @@ public abstract class FieldComparator<T> {
       return DocValues.getBinary(context.reader(), field);
     }
 
-    /** Check whether the given value represents <tt>null</tt>. This can be
-     *  useful if the {@link BinaryDocValues} returned by {@link #getBinaryDocValues}
-     *  use a special value as a sentinel.
-     *  <p>NOTE: The null value can only be an EMPTY {@link BytesRef}. */
-    protected boolean isNull(int doc, BytesRef term) throws IOException {
-      return getValueForDoc(doc) == null;
-    }
-
     @Override
     public LeafFieldComparator getLeafComparator(LeafReaderContext context) throws IOException {
       docTerms = getBinaryDocValues(context, field);
@@ -934,6 +926,6 @@ public abstract class FieldComparator<T> {
     }
 
     @Override
-    public void setScorer(Scorer scorer) {}
+    public void setScorer(Scorable scorer) {}
   }
 }

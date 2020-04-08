@@ -210,7 +210,7 @@ public class TestQPHelper extends LuceneTestCase {
   @Override
   public void setUp() throws Exception {
     super.setUp();
-    originalMaxClauses = BooleanQuery.getMaxClauseCount();
+    originalMaxClauses = IndexSearcher.getMaxClauseCount();
   }
 
   public StandardQueryParser getParser(Analyzer a) throws Exception {
@@ -350,7 +350,7 @@ public class TestQPHelper extends LuceneTestCase {
   }
 
   //individual CJK chars as terms, like StandardAnalyzer
-  private class SimpleCJKTokenizer extends Tokenizer {
+  private static class SimpleCJKTokenizer extends Tokenizer {
     private CharTermAttribute termAtt = addAttribute(CharTermAttribute.class);
 
     public SimpleCJKTokenizer() {
@@ -368,7 +368,7 @@ public class TestQPHelper extends LuceneTestCase {
     }
   }
 
-  private class SimpleCJKAnalyzer extends Analyzer {
+  private static class SimpleCJKAnalyzer extends Analyzer {
     @Override
     public TokenStreamComponents createComponents(String fieldName) {
       return new TokenStreamComponents(new SimpleCJKTokenizer());
@@ -1017,7 +1017,7 @@ public class TestQPHelper extends LuceneTestCase {
 
   // too many boolean clauses, so ParseException is expected
   public void testBooleanQuery() throws Exception {
-    BooleanQuery.setMaxClauseCount(2);
+    IndexSearcher.setMaxClauseCount(2);
     expectThrows(QueryNodeException.class, () -> {
       StandardQueryParser qp = new StandardQueryParser();
       qp.setAnalyzer(new MockAnalyzer(random(), MockTokenizer.WHITESPACE, false));
@@ -1248,11 +1248,11 @@ public class TestQPHelper extends LuceneTestCase {
 
   @Override
   public void tearDown() throws Exception {
-    BooleanQuery.setMaxClauseCount(originalMaxClauses);
+    IndexSearcher.setMaxClauseCount(originalMaxClauses);
     super.tearDown();
   }
 
-  private class CannedTokenizer extends Tokenizer {
+  private static class CannedTokenizer extends Tokenizer {
     private int upto = 0;
     private final PositionIncrementAttribute posIncr = addAttribute(PositionIncrementAttribute.class);
     private final CharTermAttribute term = addAttribute(CharTermAttribute.class);
@@ -1291,7 +1291,7 @@ public class TestQPHelper extends LuceneTestCase {
     }
   }
 
-  private class CannedAnalyzer extends Analyzer {
+  private static class CannedAnalyzer extends Analyzer {
     @Override
     public TokenStreamComponents createComponents(String ignored) {
       return new TokenStreamComponents(new CannedTokenizer());
@@ -1309,7 +1309,7 @@ public class TestQPHelper extends LuceneTestCase {
     
     Query q = new StandardQueryParser(new CannedAnalyzer()).parse("\"a\"", "field");
     assertTrue(q instanceof MultiPhraseQuery);
-    assertEquals(1, s.search(q, 10).totalHits);
+    assertEquals(1, s.search(q, 10).totalHits.value);
     r.close();
     w.close();
     dir.close();

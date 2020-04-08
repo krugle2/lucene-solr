@@ -76,24 +76,22 @@ public class SchemaHandler extends RequestHandlerBase implements SolrCoreAware, 
 
   @Override
   public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws Exception {
-    SolrConfigHandler.setWt(req, JSON);
+    RequestHandlerUtils.setWt(req, JSON);
     String httpMethod = (String) req.getContext().get("httpMethod");
     if ("POST".equals(httpMethod)) {
       if (isImmutableConfigSet) {
-        rsp.add("errors", "ConfigSet is immutable");
-        return;
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "ConfigSet is immutable");
       }
       if (req.getContentStreams() == null) {
-        rsp.add("errors", "no stream");
-        return;
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "no stream");
       }
 
       try {
         List errs = new SchemaManager(req).performOperations();
-        if (!errs.isEmpty()) rsp.add("errors", errs);
+        if (!errs.isEmpty())
+          throw new ApiBag.ExceptionWithErrObject(SolrException.ErrorCode.BAD_REQUEST,"error processing commands", errs);
       } catch (IOException e) {
-        rsp.add("errors", Collections.singletonList("Error reading input String " + e.getMessage()));
-        rsp.setException(e);
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Error reading input String " + e.getMessage(), e);
       }
     } else {
       handleGET(req, rsp);
@@ -137,21 +135,6 @@ public class SchemaHandler extends RequestHandlerBase implements SolrCoreAware, 
           rsp.add(IndexSchema.NAME, schemaName);
           break;
         }
-        case "/schema/defaultsearchfield": {
-          final String defaultSearchFieldName = req.getSchema().getDefaultSearchFieldName();
-          if (null == defaultSearchFieldName) {
-            final String message = "undefined " + IndexSchema.DEFAULT_SEARCH_FIELD;
-            throw new SolrException(SolrException.ErrorCode.NOT_FOUND, message);
-          }
-          rsp.add(IndexSchema.DEFAULT_SEARCH_FIELD, defaultSearchFieldName);
-          break;
-        }
-        case "/schema/solrqueryparser": {
-          SimpleOrderedMap<Object> props = new SimpleOrderedMap<>();
-          props.add(IndexSchema.DEFAULT_OPERATOR, req.getSchema().getQueryParserDefaultOperator());
-          rsp.add(IndexSchema.SOLR_QUERY_PARSER, props);
-          break;
-        }
         case "/schema/zkversion": {
           int refreshIfBelowVersion = -1;
           Object refreshParam = req.getParams().get("refreshIfBelowVersion");
@@ -175,13 +158,8 @@ public class SchemaHandler extends RequestHandlerBase implements SolrCoreAware, 
           rsp.add("zkversion", zkVersion);
           break;
         }
-        case "/schema/solrqueryparser/defaultoperator": {
-          rsp.add(IndexSchema.DEFAULT_OPERATOR, req.getSchema().getQueryParserDefaultOperator());
-          break;
-        }
         default: {
-          List<String> parts = StrUtils.splitSmart(path, '/');
-          if (parts.get(0).isEmpty()) parts.remove(0);
+          List<String> parts = StrUtils.splitSmart(path, '/', true);
           if (parts.size() > 1 && level2.containsKey(parts.get(1))) {
             String realName = parts.get(1);
             String fieldName = IndexSchema.nameMapping.get(realName);
@@ -237,8 +215,7 @@ public class SchemaHandler extends RequestHandlerBase implements SolrCoreAware, 
 
   @Override
   public SolrRequestHandler getSubHandler(String subPath) {
-    List<String> parts = StrUtils.splitSmart(subPath, '/');
-    if (parts.get(0).isEmpty()) parts.remove(0);
+    List<String> parts = StrUtils.splitSmart(subPath, '/', true);
     String prefix =  parts.get(0);
     if(subPaths.contains(prefix)) return this;
 

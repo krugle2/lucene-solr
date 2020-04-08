@@ -39,7 +39,7 @@
                         **/lib/*.jar,
                         licenses/**,
                         */docs/,**/README*"
-              excludes="build/**,site/**,tools/**,**/lib/*servlet-api*.jar"
+              excludes="build/**,site/**,tools/**,**/lib/*servlet-api*.jar,dev-docs/**"
   />
 
   <!-- ================================================================== -->
@@ -89,7 +89,7 @@
     <property name="skipRegexChecksum" value=""/>
     <license-check-macro dir="${basedir}" licensedir="${common.dir}/licenses">
       <additional-filters>
-        <replaceregex pattern="jetty([^/]+)$" replace="jetty" flags="gi" />
+        <replaceregex pattern="^jetty([^/]+)$" replace="jetty" flags="gi" />
         <replaceregex pattern="slf4j-([^/]+)$" replace="slf4j" flags="gi" />
         <replaceregex pattern="javax\.servlet([^/]+)$" replace="javax.servlet" flags="gi" />
         <replaceregex pattern="(bcmail|bcprov)-([^/]+)$" replace="\1" flags="gi" />
@@ -144,13 +144,6 @@
 
   <!-- we check for broken links across all documentation -->
   <target name="-documentation-lint" depends="documentation">
-    <echo message="checking for broken html..."/>
-    <jtidy-macro>
-       <!-- NOTE: must currently exclude deprecated-list due to a javadocs bug (as of 1.7.0_09)
-            javadocs generates invalid XML if you deprecate a method that takes a parameter
-            with a generic type -->
-      <fileset dir="build/docs" includes="**/*.html" excludes="**/deprecated-list.html"/>
-    </jtidy-macro>
     <echo message="Checking for broken links..."/>
     <check-broken-links dir="build/docs"/>
     <echo message="Checking for missing docs..."/>
@@ -167,7 +160,6 @@
     <check-missing-javadocs dir="build/docs/analyzers-phonetic" level="method"/>
     <!-- analyzers-smartcn: problems -->
     <check-missing-javadocs dir="build/docs/analyzers-stempel" level="method"/>
-    <!-- analyzers-uima: problems -->
     <!-- benchmark: problems -->
     <check-missing-javadocs dir="build/docs/classification" level="method"/>
     <!-- codecs: problems -->
@@ -183,7 +175,6 @@
     <!-- queries: problems -->
     <!-- queryparser: problems -->
     <!-- sandbox: problems -->
-    <check-missing-javadocs dir="build/docs/spatial" level="method"/>
     <!-- spatial-extras: problems -->
     <check-missing-javadocs dir="build/docs/suggest" level="method"/>
     <!-- test-framework: problems -->
@@ -288,6 +279,7 @@
       <zipfileset prefix="lucene-${version}" dir="${build.dir}">
         <patternset refid="binary.build.dist.patterns"/>
       </zipfileset>
+      <zipfileset prefix="lucene-${version}" dir="${build.dir}" includes="**/*.sh,**/*.bat" filemode="755"/>
     </zip>
     <make-checksums file="${dist.dir}/lucene-${version}.zip"/>
   </target>
@@ -311,6 +303,7 @@
       <tarfileset prefix="lucene-${version}" dir="${build.dir}">
         <patternset refid="binary.build.dist.patterns"/>
       </tarfileset>
+      <tarfileset prefix="lucene-${version}" dir="${build.dir}" includes="**/*.sh,**/*.bat" filemode="755"/>
     </tar>
     <make-checksums file="${dist.dir}/lucene-${version}.tgz"/>
   </target>
@@ -353,8 +346,6 @@
 
     <!-- Exclude javadoc package-list files under licenses incompatible with the ASL -->
     <delete dir="${src.export.dir}/tools/javadoc/java8"/>
-    <!-- Exclude clover license files incompatible with the ASL -->
-    <delete dir="${src.export.dir}/tools/clover"/>
 
     <!-- because we only package the "lucene/" folder, we have to adjust dir to work on: -->
     <property name="local.src.export.dir" location="${src.export.dir}/lucene"/>
@@ -390,7 +381,7 @@
   <!-- ================================================================== -->
   <target name="dist-src" depends="package-tgz-src"/>
 
-  <target name="dist-all" depends="dist, dist-src, -dist-changes, -dist-keys"/>
+  <target name="dist-all" depends="dist, dist-src, -dist-changes"/>
 
   <!-- copy changes/ to the release folder -->
   <target name="-dist-changes">
@@ -399,21 +390,8 @@
    </copy>
   </target>
 
-  <!-- copy KEYS to the release folder -->
-  <target name="-dist-keys">
-   <get src="http://home.apache.org/keys/group/lucene.asc" 
-        dest="${dist.dir}/KEYS"/>
-  </target>
-
-  <target name="copy-to-stage">
-    <copy-to-stage-macro artifacts.dir="${dist.dir}"/>
-  </target>
-
   <target name="prepare-release-no-sign" depends="clean, dist-all, generate-maven-artifacts"/>
   <target name="prepare-release" depends="prepare-release-no-sign, sign-artifacts"/>
-  <target name="stage" depends="prepare-release, copy-to-stage">
-
-  </target>
 
   <target name="-dist-maven" depends="install-maven-tasks">
     <sequential>
@@ -425,6 +403,19 @@
         <fileset dir="${common.dir}/test-framework" includes="build.xml"/>
       </subant>
       <modules-crawl target="-dist-maven"/>
+    </sequential>
+  </target>
+
+  <target name="-install-to-maven-local-repo" depends="install-maven-tasks">
+    <sequential>
+      <m2-install pom.xml="${filtered.pom.templates.dir}/pom.xml"/>        <!-- Lucene/Solr grandparent POM -->
+      <m2-install pom.xml="${filtered.pom.templates.dir}/lucene/pom.xml"/> <!-- Lucene parent POM -->
+      <subant target="-install-to-maven-local-repo" failonerror="true" inheritall="false">
+        <propertyset refid="uptodate.and.compiled.properties"/>
+        <fileset dir="${common.dir}/core" includes="build.xml"/>
+        <fileset dir="${common.dir}/test-framework" includes="build.xml"/>
+      </subant>
+      <modules-crawl target="-install-to-maven-local-repo"/>
     </sequential>
   </target>
 

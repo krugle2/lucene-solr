@@ -37,27 +37,36 @@ public class MeanMetric extends Metric {
   private long count;
 
   public MeanMetric(String columnName){
-    init("avg", columnName);
+    init("avg", columnName, false);
+  }
+
+  public MeanMetric(String columnName, boolean outputLong){
+    init("avg", columnName, outputLong);
   }
 
   public MeanMetric(StreamExpression expression, StreamFactory factory) throws IOException{
     // grab all parameters out
     String functionName = expression.getFunctionName();
     String columnName = factory.getValueOperand(expression, 0);
-    
+    String outputLong = factory.getValueOperand(expression, 1);
+
+
     // validate expression contains only what we want.
     if(null == columnName){
       throw new IOException(String.format(Locale.ROOT,"Invalid expression %s - expected %s(columnName)", expression, functionName));
     }
-    if(1 != expression.getParameters().size()){
-      throw new IOException(String.format(Locale.ROOT,"Invalid expression %s - unknown operands found", expression));
+
+    boolean ol = false;
+    if(outputLong != null) {
+      ol = Boolean.parseBoolean(outputLong);
     }
     
-    init(functionName, columnName);    
+    init(functionName, columnName, ol);
   }
   
-  private void init(String functionName, String columnName){
+  private void init(String functionName, String columnName, boolean outputLong){
     this.columnName = columnName;
+    this.outputLong = outputLong;
     setFunctionName(functionName);
     setIdentifier(functionName, "(", columnName, ")");
   }
@@ -66,34 +75,44 @@ public class MeanMetric extends Metric {
     ++count;
     Object o = tuple.get(columnName);
     if(o instanceof Double) {
-      Double d = (Double)tuple.get(columnName);
+      Double d = (Double) o;
       doubleSum += d;
+    } else if(o instanceof Float) {
+      Float f = (Float) o;
+      doubleSum += f.doubleValue();
+    } else if(o instanceof Integer) {
+      Integer i = (Integer)o;
+      longSum += i.longValue();
     } else {
-      Long l = (Long)tuple.get(columnName);
+      Long l = (Long)o;
       longSum += l;
     }
   }
 
   public Metric newInstance() {
-    return new MeanMetric(columnName);
+    return new MeanMetric(columnName, outputLong);
   }
 
   public String[] getColumns() {
     return new String[]{columnName};
   }
 
-  public Double getValue() {
+  public Number getValue() {
     double dcount = (double)count;
     if(longSum == 0) {
       return doubleSum/dcount;
-
     } else {
-      return longSum/dcount;
+      double mean = longSum/dcount;
+      if(outputLong) {
+        return Math.round(mean);
+      } else {
+        return mean;
+      }
     }
   }
   
   @Override
   public StreamExpressionParameter toExpression(StreamFactory factory) throws IOException {
-    return new StreamExpression(getFunctionName()).withParameter(columnName);
+    return new StreamExpression(getFunctionName()).withParameter(columnName).withParameter(Boolean.toString(outputLong));
   }
 }

@@ -23,48 +23,52 @@
   <xi:include href="solrconfig.snippet.randomindexconfig.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
   <directoryFactory name="DirectoryFactory" class="${solr.directoryFactory:solr.RAMDirectoryFactory}"/>
   <schemaFactory class="ClassicIndexSchemaFactory"/>
-  <requestHandler name="standard" class="solr.StandardRequestHandler" />
+  <requestHandler name="/select" class="solr.SearchHandler" />
   
   <query>
     <!-- Maximum number of clauses in a boolean query... can affect
         range or wildcard queries that expand to big boolean
         queries.  An exception is thrown if exceeded.
     -->
-    <maxBooleanClauses>1024</maxBooleanClauses>
+    <maxBooleanClauses>${solr.max.booleanClauses:1024}</maxBooleanClauses>
 
     <!-- Cache specification for Filters or DocSets - unordered set of *all* documents
          that match a particular query.
       -->
     <filterCache
       enabled="${filterCache.enabled}"
-      class="solr.search.FastLRUCache"
       size="512"
       initialSize="512"
       autowarmCount="2"/>
 
     <queryResultCache
       enabled="${queryResultCache.enabled}"
-      class="solr.search.LRUCache"
       size="512"
       initialSize="512"
       autowarmCount="2"/>
 
     <documentCache
       enabled="${documentCache.enabled}"
-      class="solr.search.LRUCache"
       size="512"
       initialSize="512"
       autowarmCount="0"/>
 
+    <cache
+      name="user_definied_cache_XXX"
+      enabled="${user_definied_cache_XXX.enabled:false}"  
+      />
+    <cache
+      name="user_definied_cache_ZZZ"
+      enabled="${user_definied_cache_ZZZ.enabled:false}"  
+      />
 
+
+    
     <!-- If true, stored fields that are not requested will be loaded lazily.
     -->
     <enableLazyFieldLoading>true</enableLazyFieldLoading>
 
     <queryResultWindowSize>10</queryResultWindowSize>
-
-    <!-- set maxSize artificially low to exercise both types of sets -->
-    <HashDocSet maxSize="3" loadFactor="0.75"/>
 
     <!-- boolToFilterOptimizer converts boolean clauses with zero boost
          into cached filters if the number of docs selected by the clause exceeds
@@ -73,7 +77,13 @@
     <boolTofilterOptimizer enabled="false" cacheSize="32" threshold=".05"/>
 
   </query>
-  
+
+  <initParams path="/select">
+    <lst name="defaults">
+      <str name="df">text</str>
+    </lst>
+  </initParams>
+
 </config>
 
 

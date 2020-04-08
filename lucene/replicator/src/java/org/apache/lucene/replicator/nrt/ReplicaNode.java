@@ -19,6 +19,7 @@ package org.apache.lucene.replicator.nrt;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -33,7 +34,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.SegmentInfos;
@@ -43,9 +43,10 @@ import org.apache.lucene.search.SearcherFactory;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.BufferedChecksumIndexInput;
-import org.apache.lucene.store.ByteArrayIndexInput;
+import org.apache.lucene.store.ByteBuffersDataInput;
+import org.apache.lucene.store.ByteBuffersIndexInput;
+import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.Lock;
@@ -84,7 +85,7 @@ public abstract class ReplicaNode extends Node {
   public ReplicaNode(int id, Directory dir, SearcherFactory searcherFactory, PrintStream printStream) throws IOException {
     super(id, dir, searcherFactory, printStream);
 
-    if (dir instanceof FSDirectory && ((FSDirectory) dir).checkPendingDeletions()) {
+    if (dir.getPendingDeletions().isEmpty() == false) {
       throw new IllegalArgumentException("Directory " + dir + " still has pending deleted files; cannot initialize IndexWriter");
     }
 
@@ -139,7 +140,7 @@ public abstract class ReplicaNode extends Node {
       SegmentInfos infos;
       if (segmentsFileName == null) {
         // No index here yet:
-        infos = new SegmentInfos(Version.LATEST);
+        infos = new SegmentInfos(Version.LATEST.major);
         message("top: init: no segments in index");
       } else {
         message("top: init: read existing segments commit " + segmentsFileName);
@@ -201,7 +202,7 @@ public abstract class ReplicaNode extends Node {
         assert deleter.getRefCount(segmentsFileName) == 1;
         deleter.decRef(Collections.singleton(segmentsFileName));
 
-        if (dir instanceof FSDirectory && ((FSDirectory) dir).checkPendingDeletions()) {
+        if (dir.getPendingDeletions().isEmpty() == false) {
           // If e.g. virus checker blocks us from deleting, we absolutely cannot start this node else there is a definite window during
           // which if we carsh, we cause corruption:
           throw new RuntimeException("replica cannot start: existing segments file=" + segmentsFileName + " must be removed in order to start, but the file delete failed");
@@ -244,7 +245,7 @@ public abstract class ReplicaNode extends Node {
         byte[] infosBytes = job.getCopyState().infosBytes;
 
         SegmentInfos syncInfos = SegmentInfos.readCommit(dir,
-                                                         new BufferedChecksumIndexInput(new ByteArrayIndexInput("SegmentInfos", job.getCopyState().infosBytes)),
+                                                         toIndexInput(job.getCopyState().infosBytes),
                                                          job.getCopyState().gen);
 
         // Must always commit to a larger generation than what's currently in the index:
@@ -287,15 +288,6 @@ public abstract class ReplicaNode extends Node {
       // Finally, we are open for business, since our index now "agrees" with the primary:
       mgr = new SegmentInfosSearcherManager(dir, this, infos, searcherFactory);
 
-      IndexSearcher searcher = mgr.acquire();
-      try {
-        // TODO: this is test specific:
-        int hitCount = searcher.count(new TermQuery(new Term("marker", "marker")));
-        message("top: marker count=" + hitCount + " version=" + ((DirectoryReader) searcher.getIndexReader()).getVersion());
-      } finally {
-        mgr.release(searcher);
-      }
-
       // Must commit after init mgr:
       if (doCommit) {
         // Very important to commit what we just sync'd over, because we removed the pre-existing commit point above if we had to
@@ -312,7 +304,7 @@ public abstract class ReplicaNode extends Node {
       } else {
         dir.close();
       }
-      IOUtils.reThrow(t);
+      throw IOUtils.rethrowAlways(t);
     }
   }
   
@@ -362,7 +354,7 @@ public abstract class ReplicaNode extends Node {
     }
   }
 
-  void finishNRTCopy(CopyJob job, long startNS) throws IOException {
+  protected void finishNRTCopy(CopyJob job, long startNS) throws IOException {
     CopyState copyState = job.getCopyState();
     message("top: finishNRTCopy: version=" + copyState.version + (job.getFailed() ? " FAILED" : "") + " job=" + job);
 
@@ -393,7 +385,7 @@ public abstract class ReplicaNode extends Node {
       // Turn byte[] back to SegmentInfos:
       byte[] infosBytes = copyState.infosBytes;
       SegmentInfos infos = SegmentInfos.readCommit(dir,
-                                                   new BufferedChecksumIndexInput(new ByteArrayIndexInput("SegmentInfos", copyState.infosBytes)),
+                                                   toIndexInput(copyState.infosBytes),
                                                    copyState.gen);
       assert infos.getVersion() == copyState.version;
 
@@ -450,6 +442,13 @@ public abstract class ReplicaNode extends Node {
                           markerCount));
   }
 
+  private ChecksumIndexInput toIndexInput(byte[] input) {
+    return new BufferedChecksumIndexInput(
+        new ByteBuffersIndexInput(
+            new ByteBuffersDataInput(
+                Arrays.asList(ByteBuffer.wrap(input))), "SegmentInfos"));
+  }
+
   /** Start a background copying job, to copy the specified files from the current primary node.  If files is null then the latest copy
    *  state should be copied.  If prevJob is not null, then the new copy job is replacing it and should 1) cancel the previous one, and
    *  2) optionally salvage e.g. partially copied and, shared with the new copy job, files. */
@@ -497,7 +496,7 @@ public abstract class ReplicaNode extends Node {
 
     if (version < curVersion) {
       // This can happen, if two syncs happen close together, and due to thread scheduling, the incoming older version runs after the newer version
-      message("top: new NRT point (version=" + version + ") is older than current (version=" + version + "); skipping");
+      message("top: new NRT point (version=" + version + ") is older than current (version=" + curVersion + "); skipping");
       return null;
     }
 
@@ -731,8 +730,8 @@ public abstract class ReplicaNode extends Node {
   }
 
   /** Carefully determine if the file on the primary, identified by its {@code String fileName} along with the {@link FileMetaData}
-   * "summarizing" its contents, is precisely the same file that we have locally.  If the file does not exist locally, or if its its header
-   * (inclues the segment id), length, footer (including checksum) differ, then this returns false, else true. */
+   * "summarizing" its contents, is precisely the same file that we have locally.  If the file does not exist locally, or if its header
+   * (includes the segment id), length, footer (including checksum) differ, then this returns false, else true. */
   private boolean fileIsIdentical(String fileName, FileMetaData srcMetaData) throws IOException {
 
     FileMetaData destMetaData = readLocalFileMetaData(fileName);

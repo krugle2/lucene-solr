@@ -22,7 +22,6 @@ import java.util.Map;
 import org.apache.lucene.analysis.TokenFilter;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.util.TokenFilterFactory;
-import org.apache.lucene.analysis.standard.ClassicFilter;
 
 /**
  * Factory for {@link ClassicFilter}.
@@ -33,8 +32,13 @@ import org.apache.lucene.analysis.standard.ClassicFilter;
  *     &lt;filter class="solr.ClassicFilterFactory"/&gt;
  *   &lt;/analyzer&gt;
  * &lt;/fieldType&gt;</pre>
+ * @since 3.1.0
+ * @lucene.spi {@value #NAME}
  */
 public class ClassicFilterFactory extends TokenFilterFactory {
+
+  /** SPI name */
+  public static final String NAME = "classic";
   
   /** Creates a new ClassicFilterFactory */
   public ClassicFilterFactory(Map<String,String> args) {
@@ -44,6 +48,11 @@ public class ClassicFilterFactory extends TokenFilterFactory {
     }
   }
   
+  /** Default ctor for compatibility with SPI */
+  public ClassicFilterFactory() {
+    throw defaultCtorException();
+  }
+
   @Override
   public TokenFilter create(TokenStream input) {
     return new ClassicFilter(input);

@@ -16,8 +16,6 @@
  */
 package org.apache.solr.common.params;
 
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 
@@ -176,19 +174,41 @@ public interface CommonParams {
   String CORES_HANDLER_PATH = "/admin/cores";
   String COLLECTIONS_HANDLER_PATH = "/admin/collections";
   String INFO_HANDLER_PATH = "/admin/info";
+  String HEALTH_CHECK_HANDLER_PATH = INFO_HANDLER_PATH + "/health";
   String CONFIGSETS_HANDLER_PATH = "/admin/configs";
   String AUTHZ_PATH = "/admin/authorization";
   String AUTHC_PATH = "/admin/authentication";
   String ZK_PATH = "/admin/zookeeper";
+  String ZK_STATUS_PATH = "/admin/zookeeper/status";
+  String SYSTEM_INFO_PATH = "/admin/info/system";
   String METRICS_PATH = "/admin/metrics";
+  String METRICS_HISTORY_PATH = "/admin/metrics/history";
+  String AUTOSCALING_PATH = "/admin/autoscaling";
+  String AUTOSCALING_HISTORY_PATH = "/admin/autoscaling/history";
+  String AUTOSCALING_DIAGNOSTICS_PATH = "/admin/autoscaling/diagnostics";
+  String AUTOSCALING_SUGGESTIONS_PATH = "/admin/autoscaling/suggestions";
 
-  Set<String> ADMIN_PATHS = new HashSet<>(Arrays.asList(
+  String STATUS = "status";
+
+  String OK = "OK";
+  String FAILURE = "FAILURE";
+
+  Set<String> ADMIN_PATHS = Set.of(
       CORES_HANDLER_PATH,
       COLLECTIONS_HANDLER_PATH,
+      HEALTH_CHECK_HANDLER_PATH,
       CONFIGSETS_HANDLER_PATH,
+      SYSTEM_INFO_PATH,
       AUTHC_PATH,
       AUTHZ_PATH,
-      METRICS_PATH));
+      METRICS_PATH,
+      METRICS_HISTORY_PATH,
+      AUTOSCALING_PATH,
+      AUTOSCALING_HISTORY_PATH,
+      AUTOSCALING_DIAGNOSTICS_PATH,
+      AUTOSCALING_SUGGESTIONS_PATH);
+  String APISPEC_LOCATION = "apispec/";
+  String INTROSPECT = "/_introspect";
 
   /** valid values for: <code>echoParams</code> */
   enum EchoParamStyle {
@@ -211,7 +231,7 @@ public interface CommonParams {
       }
       return null;
     }
-  };
+  }
 
   /** which parameters to log (if not supplied all parameters will be logged) **/
   String LOG_PARAMS_LIST = "logParamsList";
@@ -225,6 +245,9 @@ public interface CommonParams {
   String THREADS = "threads";
   String TRUE = Boolean.TRUE.toString();
   String FALSE = Boolean.FALSE.toString();
+
+  /** document type in {@link CollectionAdminParams#SYSTEM_COLL} collection. **/
+  String TYPE = "type";
 
   /** Used as a local parameter on queries.  cache=false means don't check any query or filter caches.
    * cache=true is the default.
@@ -248,7 +271,9 @@ public interface CommonParams {
 
   /**
    * When querying a node, prefer local node's cores for distributed queries.
+   * @deprecated Use {@code ShardParams.SHARDS_PREFERENCE}
    */
+  @Deprecated // SOLR-14035
   String PREFER_LOCAL_SHARDS = "preferLocalShards";
 
   String JAVABIN = "javabin";
@@ -259,5 +284,20 @@ public interface CommonParams {
 
   String NAME = "name";
   String VALUE_LONG = "val";
+
+  String VERSION_FIELD="_version_";
+
+  String FAIL_ON_VERSION_CONFLICTS ="failOnVersionConflicts";
+
+  String ID = "id";
+  String JSON_MIME = "application/json";
+
+  String JAVABIN_MIME = "application/javabin";
+
+  String FILE = "file";
+  String FILES = "files";
+
+  String CHILDDOC = "_childDocuments_";
+
 }
 

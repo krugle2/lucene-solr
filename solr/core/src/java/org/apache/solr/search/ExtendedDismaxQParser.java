@@ -17,6 +17,7 @@
 package org.apache.solr.search;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -28,12 +29,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.core.StopFilterFactory;
 import org.apache.lucene.analysis.util.TokenFilterFactory;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queries.function.BoostedQuery;
 import org.apache.lucene.queries.function.FunctionQuery;
+import org.apache.lucene.queries.function.FunctionScoreQuery;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.ProductFloatFunction;
 import org.apache.lucene.queries.function.valuesource.QueryValueSource;
@@ -45,7 +48,9 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MultiPhraseQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.spans.SpanQuery;
 import org.apache.solr.analysis.TokenizerChain;
+import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.DisMaxParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
@@ -53,6 +58,8 @@ import org.apache.solr.parser.QueryParser;
 import org.apache.solr.parser.SolrQueryParserBase.MagicFieldName;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.schema.FieldType;
+import org.apache.solr.schema.IndexSchema;
+import org.apache.solr.search.ExtendedDismaxQParser.ExtendedSolrQueryParser.Alias;
 import org.apache.solr.util.SolrPluginUtils;
 
 import com.google.common.collect.Multimap;
@@ -127,7 +134,7 @@ public class ExtendedDismaxQParser extends QParser {
     parsedUserQuery = null;
     String userQuery = getString();
     altUserQuery = null;
-    if( userQuery == null || userQuery.trim().length() == 0 ) {
+    if (StringUtils.isBlank(userQuery)) {
       // If no query is specified, we may have an alternate
       if (config.altQ != null) {
         QParser altQParser = subQuery(config.altQ, null);
@@ -142,8 +149,10 @@ public class ExtendedDismaxQParser extends QParser {
       ExtendedSolrQueryParser up = createEdismaxQueryParser(this, IMPOSSIBLE_FIELD_NAME);
       up.addAlias(IMPOSSIBLE_FIELD_NAME, config.tiebreaker, config.queryFields);
       addAliasesFromRequest(up, config.tiebreaker);
+      validateQueryFields(up);
       up.setPhraseSlop(config.qslop);     // slop for explicit user phrase queries
       up.setAllowLeadingWildcard(true);
+      up.setAllowSubQueryParsing(config.userFields.isAllowed(MagicFieldName.QUERY.field));
       
       // defer escaping and only do if lucene parsing fails, or we need phrases
       // parsing fails.  Need to sloppy phrase queries anyway though.
@@ -160,6 +169,8 @@ public class ExtendedDismaxQParser extends QParser {
       
       // but always for unstructured implicit bqs created by getFieldQuery
       up.minShouldMatch = config.minShouldMatch;
+
+      up.setSplitOnWhitespace(config.splitOnWhitespace);
       
       parsedUserQuery = parseOriginalQuery(up, mainUserQuery, clauses, config);
       
@@ -188,16 +199,94 @@ public class ExtendedDismaxQParser extends QParser {
     //
     // create a boosted query (scores multiplied by boosts)
     //
-    Query topQuery = query.build();
+    Query topQuery = QueryUtils.build(query, this);
     List<ValueSource> boosts = getMultiplicativeBoosts();
     if (boosts.size()>1) {
       ValueSource prod = new ProductFloatFunction(boosts.toArray(new ValueSource[boosts.size()]));
-      topQuery = new BoostedQuery(topQuery, prod);
+      topQuery = FunctionScoreQuery.boostByValue(topQuery, prod.asDoubleValuesSource());
     } else if (boosts.size() == 1) {
-      topQuery = new BoostedQuery(topQuery, boosts.get(0));
+      topQuery = FunctionScoreQuery.boostByValue(topQuery, boosts.get(0).asDoubleValuesSource());
     }
     
     return topQuery;
+  }
+  
+  /**
+   * Validate query field names. Must be explicitly defined in the schema or match a dynamic field pattern.
+   * Checks source field(s) represented by a field alias
+   * 
+   * @param up parser used
+   * @throws SyntaxError for invalid field name
+   */
+  protected void validateQueryFields(ExtendedSolrQueryParser up) throws SyntaxError {
+    List<String> flds = new ArrayList<>(config.queryFields.keySet().size());
+    for (String fieldName : config.queryFields.keySet()) {
+      buildQueryFieldList(fieldName, up.getAlias(fieldName), flds, up);
+    }
+    
+    checkFieldsInSchema(flds);
+  }
+  
+  /**
+   * Build list of source (non-alias) query field names. Recursive through aliases.
+   * 
+   * @param fieldName query field name
+   * @param alias field alias
+   * @param flds list of query field names
+   * @param up parser used
+   * @throws SyntaxError for invalid field name
+   */
+  private void buildQueryFieldList(String fieldName, Alias alias, List<String> flds, ExtendedSolrQueryParser up) throws SyntaxError {
+    if (null == alias) {
+        flds.add(fieldName);
+        return;
+    }
+
+    up.validateCyclicAliasing(fieldName);
+    flds.addAll(getFieldsFromAlias(up, alias));
+  }
+  
+  /**
+   * Return list of source (non-alias) field names from an alias
+   * 
+   * @param up parser used
+   * @param a field alias
+   * @return list of source fields
+   * @throws SyntaxError for invalid field name
+   */
+  private List<String> getFieldsFromAlias(ExtendedSolrQueryParser up, Alias a) throws SyntaxError {
+    List<String> lst = new ArrayList<>();
+    for (String s : a.fields.keySet()) {
+      buildQueryFieldList(s, up.getAlias(s), lst, up);
+    }
+
+    return lst;
+  }
+  
+  /**
+   * Verify field name exists in schema, explicit or dynamic field pattern
+   * 
+   * @param fieldName source field name to verify
+   * @throws SyntaxError for invalid field name
+   */
+  private void checkFieldInSchema(String fieldName) throws SyntaxError {
+    try {
+        config.schema.getField(fieldName);
+    } catch (SolrException se) {
+        throw new SyntaxError("Query Field '" + fieldName + "' is not a valid field name", se);
+    }
+  }
+
+  /**
+   * Verify list of source field names
+   * 
+   * @param flds list of source field names to verify
+   * @throws SyntaxError for invalid field name
+   */
+  private void checkFieldsInSchema(List<String> flds) throws SyntaxError {
+    for (String fieldName : flds) {
+        checkFieldInSchema(fieldName);
+    }
   }
   
   /**
@@ -278,7 +367,7 @@ public class ExtendedDismaxQParser extends QParser {
       BooleanQuery.Builder t = new BooleanQuery.Builder();
       SolrPluginUtils.flattenBooleanQuery(t, (BooleanQuery)query);
       SolrPluginUtils.setMinShouldMatch(t, config.minShouldMatch, config.mmAutoRelax);
-      query = t.build();
+      query = QueryUtils.build(t, this);
     }
     return query;
   }
@@ -454,9 +543,9 @@ public class ExtendedDismaxQParser extends QParser {
       for (String boostFunc : config.boostFuncs) {
         if(null == boostFunc || "".equals(boostFunc)) continue;
         Map<String,Float> ff = SolrPluginUtils.parseFieldBoosts(boostFunc);
-        for (String f : ff.keySet()) {
-          Query fq = subQuery(f, FunctionQParserPlugin.NAME).getQuery();
-          Float b = ff.get(f);
+        for (Map.Entry<String, Float> entry : ff.entrySet()) {
+          Query fq = subQuery(entry.getKey(), FunctionQParserPlugin.NAME).getQuery();
+          Float b = entry.getValue();
           if (null != b && b.floatValue() != 1f) {
             fq = new BoostQuery(fq, b);
           }
@@ -545,6 +634,7 @@ public class ExtendedDismaxQParser extends QParser {
     pp.addAlias(IMPOSSIBLE_FIELD_NAME, tiebreaker, getFieldBoosts(fields));
     pp.setPhraseSlop(slop);
     pp.setRemoveStopFilter(true);  // remove stop filter and keep stopwords
+    pp.setSplitOnWhitespace(config.splitOnWhitespace);
     
     /* :TODO: reevaluate using makeDismax=true vs false...
      * 
@@ -613,85 +703,7 @@ public class ExtendedDismaxQParser extends QParser {
     }
     debugInfo.add("boostfuncs", getReq().getParams().getParams(DisMaxParams.BF));
   }
-  
-  
-  // FIXME: Not in use
-  //  public static CharSequence partialEscape(CharSequence s) {
-  //    StringBuilder sb = new StringBuilder();
-  //
-  //    int len = s.length();
-  //    for (int i = 0; i < len; i++) {
-  //      char c = s.charAt(i);
-  //      if (c == ':') {
-  //        // look forward to make sure it's something that won't
-  //        // cause a parse exception (something that won't be escaped... like
-  //        // +,-,:, whitespace
-  //        if (i+1<len && i>0) {
-  //          char ch = s.charAt(i+1);
-  //          if (!(Character.isWhitespace(ch) || ch=='+' || ch=='-' || ch==':')) {
-  //            // OK, at this point the chars after the ':' will be fine.
-  //            // now look back and try to determine if this is a fieldname
-  //            // [+,-]? [letter,_] [letter digit,_,-,.]*
-  //            // This won't cover *all* possible lucene fieldnames, but we should
-  //            // only pick nice names to begin with
-  //            int start, pos;
-  //            for (start=i-1; start>=0; start--) {
-  //              ch = s.charAt(start);
-  //              if (Character.isWhitespace(ch)) break;
-  //            }
-  //
-  //            // skip whitespace
-  //            pos = start+1;
-  //
-  //            // skip leading + or -
-  //            ch = s.charAt(pos);
-  //            if (ch=='+' || ch=='-') {
-  //              pos++;
-  //            }
-  //
-  //            // we don't need to explicitly check for end of string
-  //            // since ':' will act as our sentinal
-  //
-  //              // first char can't be '-' or '.'
-  //              ch = s.charAt(pos++);
-  //              if (Character.isJavaIdentifierPart(ch)) {
-  //
-  //                for(;;) {
-  //                  ch = s.charAt(pos++);
-  //                  if (!(Character.isJavaIdentifierPart(ch) || ch=='-' || ch=='.')) {
-  //                    break;
-  //                  }
-  //                }
-  //
-  //                if (pos<=i) {
-  //                  // OK, we got to the ':' and everything looked like a valid fieldname, so
-  //                  // don't escape the ':'
-  //                  sb.append(':');
-  //                  continue;  // jump back to start of outer-most loop
-  //                }
-  //
-  //              }
-  //
-  //
-  //          }
-  //        }
-  //
-  //        // we fell through to here, so we should escape this like other reserved chars.
-  //        sb.append('\\');
-  //      }
-  //      else if (c == '\\' || c == '!' || c == '(' || c == ')' ||
-  //          c == '^' || c == '[' || c == ']' ||
-  //          c == '{'  || c == '}' || c == '~' || c == '*' || c == '?'
-  //          )
-  //      {
-  //        sb.append('\\');
-  //      }
-  //      sb.append(c);
-  //    }
-  //    return sb;
-  //  }
-  
-  
+
   protected static class Clause {
     
     boolean isBareWord() {
@@ -950,7 +962,7 @@ public class ExtendedDismaxQParser extends QParser {
     
     /** A simple container for storing alias info
      */
-    protected class Alias {
+    protected static class Alias {
       public float tie;
       public Map<String,Float> fields;
     }
@@ -976,6 +988,7 @@ public class ExtendedDismaxQParser extends QParser {
     private String field;
     private String val;
     private String val2;
+    private List<String> vals;
     private boolean bool;
     private boolean bool2;
     private float flt;
@@ -985,8 +998,7 @@ public class ExtendedDismaxQParser extends QParser {
       super(parser, defaultField);
       // Respect the q.op parameter before mm will be applied later
       SolrParams defaultParams = SolrParams.wrapDefaults(parser.getLocalParams(), parser.getParams());
-      QueryParser.Operator defaultOp = QueryParsing.getQueryParserDefaultOperator(
-          parser.getReq().getSchema(), defaultParams.get(QueryParsing.OP));
+      QueryParser.Operator defaultOp = QueryParsing.parseOP(defaultParams.get(QueryParsing.OP));
       setDefaultOperator(defaultOp);
     }
     
@@ -1036,6 +1048,7 @@ public class ExtendedDismaxQParser extends QParser {
       this.type = quoted ? QType.PHRASE : QType.FIELD;
       this.field = field;
       this.val = val;
+      this.vals = null;
       this.slop = getPhraseSlop(); // unspecified
       return getAliasedQuery();
     }
@@ -1045,10 +1058,21 @@ public class ExtendedDismaxQParser extends QParser {
       this.type = QType.PHRASE;
       this.field = field;
       this.val = val;
+      this.vals = null;
       this.slop = slop;
       return getAliasedQuery();
     }
-    
+
+    @Override
+    protected Query getFieldQuery(String field, List<String> queryTerms, boolean raw) throws SyntaxError {
+      this.type = QType.FIELD;
+      this.field = field;
+      this.val = null;
+      this.vals = queryTerms;
+      this.slop = getPhraseSlop();
+      return getAliasedMultiTermQuery();
+    }
+
     @Override
     protected Query getPrefixQuery(String field, String val) throws SyntaxError {
       if (val.equals("") && field.equals("*")) {
@@ -1057,11 +1081,15 @@ public class ExtendedDismaxQParser extends QParser {
       this.type = QType.PREFIX;
       this.field = field;
       this.val = val;
+      this.vals = null;
       return getAliasedQuery();
     }
     
     @Override
-    protected Query newFieldQuery(Analyzer analyzer, String field, String queryText, boolean quoted) throws SyntaxError {
+    protected Query newFieldQuery(Analyzer analyzer, String field, String queryText, 
+                                  boolean quoted, boolean fieldAutoGenPhraseQueries, boolean enableGraphQueries,
+                                  SynonymQueryStyle synonymQueryStyle)
+        throws SyntaxError {
       Analyzer actualAnalyzer;
       if (removeStopFilter) {
         if (nonStopFilterAnalyzerPerField == null) {
@@ -1074,7 +1102,7 @@ public class ExtendedDismaxQParser extends QParser {
       } else {
         actualAnalyzer = parser.getReq().getSchema().getFieldType(field).getQueryAnalyzer();
       }
-      return super.newFieldQuery(actualAnalyzer, field, queryText, quoted);
+      return super.newFieldQuery(actualAnalyzer, field, queryText, quoted, fieldAutoGenPhraseQueries, enableGraphQueries, synonymQueryStyle);
     }
     
     @Override
@@ -1083,6 +1111,7 @@ public class ExtendedDismaxQParser extends QParser {
       this.field = field;
       this.val = a;
       this.val2 = b;
+      this.vals = null;
       this.bool = startInclusive;
       this.bool2 = endInclusive;
       return getAliasedQuery();
@@ -1100,6 +1129,7 @@ public class ExtendedDismaxQParser extends QParser {
       this.type = QType.WILDCARD;
       this.field = field;
       this.val = val;
+      this.vals = null;
       return getAliasedQuery();
     }
     
@@ -1108,6 +1138,7 @@ public class ExtendedDismaxQParser extends QParser {
       this.type = QType.FUZZY;
       this.field = field;
       this.val = val;
+      this.vals = null;
       this.flt = minSimilarity;
       return getAliasedQuery();
     }
@@ -1140,7 +1171,7 @@ public class ExtendedDismaxQParser extends QParser {
           for (Query sub : lst) {
             q.add(sub, BooleanClause.Occur.SHOULD);
           }
-          return q.build();
+          return QueryUtils.build(q, parser);
         }
       } else {
         
@@ -1157,7 +1188,149 @@ public class ExtendedDismaxQParser extends QParser {
         return getQuery();
       }
     }
-    
+
+    /**
+     * Delegates to the super class unless the field has been specified
+     * as an alias -- in which case we recurse on each of
+     * the aliased fields, and the results are composed into a
+     * DisjunctionMaxQuery.  (so yes: aliases which point at other
+     * aliases should work)
+     */
+    protected Query getAliasedMultiTermQuery() throws SyntaxError {
+      Alias a = aliases.get(field);
+      this.validateCyclicAliasing(field);
+      if (a != null) {
+        List<Query> lst = getMultiTermQueries(a);
+        if (lst == null || lst.size() == 0) {
+          return getQuery();
+        }
+        
+        // make a DisjunctionMaxQuery in this case too... it will stop
+        // the "mm" processing from making everything required in the case
+        // that the query expanded to multiple clauses.
+        // DisMaxQuery.rewrite() removes itself if there is just a single clause anyway.
+        // if (lst.size()==1) return lst.get(0);
+        if (makeDismax) {
+          Query firstQuery = lst.get(0);
+          if ((firstQuery instanceof BooleanQuery
+              || (firstQuery instanceof BoostQuery && ((BoostQuery)firstQuery).getQuery() instanceof BooleanQuery))
+              && allSameQueryStructure(lst)) {
+            BooleanQuery.Builder q = new BooleanQuery.Builder();
+            List<Query> subs = new ArrayList<>(lst.size());
+            BooleanQuery firstBooleanQuery = firstQuery instanceof BoostQuery
+                ? (BooleanQuery)((BoostQuery)firstQuery).getQuery() : (BooleanQuery)firstQuery;
+            for (int c = 0 ; c < firstBooleanQuery.clauses().size() ; ++c) {
+              subs.clear();
+              // Make a dismax query for each clause position in the boolean per-field queries.
+              for (int n = 0 ; n < lst.size() ; ++n) {
+                if (lst.get(n) instanceof BoostQuery) {
+                  BoostQuery boostQuery = (BoostQuery)lst.get(n);
+                  BooleanQuery booleanQuery = (BooleanQuery)boostQuery.getQuery();
+                  subs.add(new BoostQuery(booleanQuery.clauses().get(c).getQuery(), boostQuery.getBoost()));
+                } else {
+                  subs.add(((BooleanQuery)lst.get(n)).clauses().get(c).getQuery());
+                }
+              }
+              q.add(newBooleanClause(new DisjunctionMaxQuery(subs, a.tie), BooleanClause.Occur.SHOULD));
+            }
+            return QueryUtils.build(q, parser);
+          } else {
+            return new DisjunctionMaxQuery(lst, a.tie); 
+          }
+        } else {
+          BooleanQuery.Builder q = new BooleanQuery.Builder();
+          for (Query sub : lst) {
+            q.add(sub, BooleanClause.Occur.SHOULD);
+          }
+          return QueryUtils.build(q, parser);
+        }
+      } else {
+        // verify that a fielded query is actually on a field that exists... if not,
+        // then throw an exception to get us out of here, and we'll treat it like a
+        // literal when we try the escape+re-parse.
+        if (exceptions) {
+          FieldType ft = schema.getFieldTypeNoEx(field);
+          if (ft == null && null == MagicFieldName.get(field)) {
+            throw unknownField;
+          }
+        }
+        return getQuery();
+      }
+    }
+
+    /**
+     * Recursively examines the given query list for identical structure in all queries.
+     * Boosts on BoostQuery-s are ignored, and the contained queries are instead used as the basis for comparison.
+     **/
+    private boolean allSameQueryStructure(List<Query> lst) {
+      boolean allSame = true;
+      Query firstQuery = lst.get(0);
+      if (firstQuery instanceof BoostQuery) {
+        firstQuery = ((BoostQuery)firstQuery).getQuery(); // ignore boost; compare contained query
+      }
+      for (int n = 1 ; n < lst.size(); ++n) {
+        Query nthQuery = lst.get(n);
+        if (nthQuery instanceof BoostQuery) {
+          nthQuery = ((BoostQuery)nthQuery).getQuery();
+        }
+        if (nthQuery.getClass() != firstQuery.getClass()) {
+          allSame = false;
+          break;
+        }
+        if (firstQuery instanceof BooleanQuery) {
+          List<BooleanClause> firstBooleanClauses = ((BooleanQuery)firstQuery).clauses();
+          List<BooleanClause> nthBooleanClauses = ((BooleanQuery)nthQuery).clauses();
+          if (firstBooleanClauses.size() != nthBooleanClauses.size()) {
+            allSame = false;
+            break;
+          }
+          for (int c = 0 ; c < firstBooleanClauses.size() ; ++c) {
+            if (nthBooleanClauses.get(c).getQuery().getClass() != firstBooleanClauses.get(c).getQuery().getClass()
+                || nthBooleanClauses.get(c).getOccur() != firstBooleanClauses.get(c).getOccur()) {
+              allSame = false;
+              break;
+            }
+            if (firstBooleanClauses.get(c).getQuery() instanceof BooleanQuery && ! allSameQueryStructure
+                (Arrays.asList(firstBooleanClauses.get(c).getQuery(), nthBooleanClauses.get(c).getQuery()))) {
+              allSame = false;
+              break;
+            }
+          }
+        }
+      }
+      return allSame;
+    }
+
+    @Override
+    protected void addMultiTermClause(List<BooleanClause> clauses, Query q) {
+      // We might have been passed a null query; the terms might have been filtered away by the analyzer.
+      if (q == null) {
+        return;
+      }
+      
+      boolean required = operator == AND_OPERATOR;
+      BooleanClause.Occur occur = required ? BooleanClause.Occur.MUST : BooleanClause.Occur.SHOULD;  
+      
+      if (q instanceof BooleanQuery) {
+        boolean allOptionalDisMaxQueries = true;
+        for (BooleanClause c : ((BooleanQuery)q).clauses()) {
+          if (c.getOccur() != BooleanClause.Occur.SHOULD || ! (c.getQuery() instanceof DisjunctionMaxQuery)) {
+            allOptionalDisMaxQueries = false;
+            break;
+          }
+        }
+        if (allOptionalDisMaxQueries) {
+          // getAliasedMultiTermQuery() constructed a BooleanQuery containing only SHOULD DisjunctionMaxQuery-s.
+          // Unwrap the query and add a clause for each contained DisMax query.
+          for (BooleanClause c : ((BooleanQuery)q).clauses()) {
+            clauses.add(newBooleanClause(c.getQuery(), occur));
+          }
+          return;
+        }
+      }
+      clauses.add(newBooleanClause(q, occur));
+    }
+
     /**
      * Validate there is no cyclic referencing in the aliasing
      */
@@ -1205,21 +1378,46 @@ public class ExtendedDismaxQParser extends QParser {
       }
       return lst;
     }
-    
+
+    protected List<Query> getMultiTermQueries(Alias a) throws SyntaxError {
+      if (a == null) return null;
+      if (a.fields.size()==0) return null;
+      List<Query> lst= new ArrayList<>(4);
+
+      for (String f : a.fields.keySet()) {
+        this.field = f;
+        Query sub = getAliasedMultiTermQuery();
+        if (sub != null) {
+          Float boost = a.fields.get(f);
+          if (boost != null && boost.floatValue() != 1f) {
+            sub = new BoostQuery(sub, boost);
+          }
+          lst.add(sub);
+        }
+      }
+      return lst;
+    }
+
     private Query getQuery() {
       try {
         
         switch (type) {
           case FIELD:  // fallthrough
           case PHRASE:
-            Query query = super.getFieldQuery(field, val, type == QType.PHRASE, false);
+            Query query;
+            if (val == null) {
+              query = super.getFieldQuery(field, vals, false);
+            } else {
+              query = super.getFieldQuery(field, val, type == QType.PHRASE, false);
+            }
             // Boolean query on a whitespace-separated string
             // If these were synonyms we would have a SynonymQuery
             if (query instanceof BooleanQuery) {
-              BooleanQuery bq = (BooleanQuery) query;
-              query = SolrPluginUtils.setMinShouldMatch(bq, minShouldMatch, false);
-            }
-            if (query instanceof PhraseQuery) {
+              if (type == QType.FIELD) { // Don't set mm for boolean query containing phrase queries
+                BooleanQuery bq = (BooleanQuery) query;
+                query = SolrPluginUtils.setMinShouldMatch(bq, minShouldMatch, false);
+              }
+            } else if (query instanceof PhraseQuery) {
               PhraseQuery pq = (PhraseQuery)query;
               if (minClauseSize > 1 && pq.getTerms().length < minClauseSize) return null;
               PhraseQuery.Builder builder = new PhraseQuery.Builder();
@@ -1236,6 +1434,8 @@ public class ExtendedDismaxQParser extends QParser {
               if (slop != mpq.getSlop()) {
                 query = new MultiPhraseQuery.Builder(mpq).setSlop(slop).build();
               }
+            } else if (query instanceof SpanQuery) {
+              return query;
             } else if (minClauseSize > 1) {
               // if it's not a type of phrase query, it doesn't meet the minClauseSize requirements
               return null;
@@ -1299,7 +1499,7 @@ public class ExtendedDismaxQParser extends QParser {
         newtf[j++] = facs[i];
       }
       
-      TokenizerChain newa = new TokenizerChain(tcq.getTokenizerFactory(), newtf);
+      TokenizerChain newa = new TokenizerChain(tcq.getCharFilterFactories(), tcq.getTokenizerFactory(), newtf);
       newa.setPositionIncrementGap(tcq.getPositionIncrementGap(fieldName));
       return newa;
     }
@@ -1320,7 +1520,7 @@ public class ExtendedDismaxQParser extends QParser {
     private DynamicField[] dynamicUserFields;
     private DynamicField[] negativeDynamicUserFields;
     
-    UserFields(Map<String,Float> ufm) {
+    UserFields(Map<String, Float> ufm) {
       userFieldsMap = ufm;
       if (0 == userFieldsMap.size()) {
         userFieldsMap.put("*", null);
@@ -1336,6 +1536,10 @@ public class ExtendedDismaxQParser extends QParser {
           else
             dynUserFields.add(new DynamicField(f));
         }
+      }
+      // unless "_query_" was expressly allowed, we forbid it.
+      if (!userFieldsMap.containsKey(MagicFieldName.QUERY.field)) {
+        userFieldsMap.put("-" + MagicFieldName.QUERY.field, null);
       }
       Collections.sort(dynUserFields);
       dynamicUserFields = dynUserFields.toArray(new DynamicField[dynUserFields.size()]);
@@ -1440,9 +1644,9 @@ public class ExtendedDismaxQParser extends QParser {
   /**
    * Simple container for configuration information used when parsing queries
    */
-  public class ExtendedDismaxConfiguration {
+  public static class ExtendedDismaxConfiguration {
     
-    /** 
+    /**
      * The field names specified by 'qf' that (most) clauses will 
      * be queried against 
      */
@@ -1478,14 +1682,19 @@ public class ExtendedDismaxQParser extends QParser {
     protected boolean lowercaseOperators;
     
     protected  String[] boostFuncs;
+
+    protected boolean splitOnWhitespace;
     
+    protected IndexSchema schema;
+
     public ExtendedDismaxConfiguration(SolrParams localParams,
         SolrParams params, SolrQueryRequest req) {
       solrParams = SolrParams.wrapDefaults(localParams, params);
-      minShouldMatch = DisMaxQParser.parseMinShouldMatch(req.getSchema(), solrParams); // req.getSearcher() here causes searcher refcount imbalance
+      schema = req.getSchema();
+      minShouldMatch = DisMaxQParser.parseMinShouldMatch(schema, solrParams); // req.getSearcher() here causes searcher refcount imbalance
       userFields = new UserFields(U.parseFieldBoosts(solrParams.getParams(DMP.UF)));
       try {
-        queryFields = DisMaxQParser.parseQueryFields(req.getSchema(), solrParams);  // req.getSearcher() here causes searcher refcount imbalance
+        queryFields = DisMaxQParser.parseQueryFields(schema, solrParams);  // req.getSearcher() here causes searcher refcount imbalance
       } catch (SyntaxError e) {
         throw new RuntimeException(e);
       }
@@ -1513,8 +1722,8 @@ public class ExtendedDismaxQParser extends QParser {
       mmAutoRelax = solrParams.getBool(DMP.MM_AUTORELAX, false);
       
       altQ = solrParams.get( DisMaxParams.ALTQ );
-      
-      lowercaseOperators = solrParams.getBool(DMP.LOWERCASE_OPS, true);
+
+      lowercaseOperators = solrParams.getBool(DMP.LOWERCASE_OPS, false);
       
       /* * * Boosting Query * * */
       boostParams = solrParams.getParams(DisMaxParams.BQ);
@@ -1522,6 +1731,8 @@ public class ExtendedDismaxQParser extends QParser {
       boostFuncs = solrParams.getParams(DisMaxParams.BF);
       
       multBoosts = solrParams.getParams(DMP.MULT_BOOST);
+
+      splitOnWhitespace = solrParams.getBool(QueryParsing.SPLIT_ON_WHITESPACE, SolrQueryParser.DEFAULT_SPLIT_ON_WHITESPACE);
     }
     /**
      * 

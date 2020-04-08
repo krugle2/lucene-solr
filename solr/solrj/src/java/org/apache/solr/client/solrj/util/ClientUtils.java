@@ -42,7 +42,8 @@ import org.apache.solr.common.util.XML;
 public class ClientUtils 
 {
   // Standard Content types
-  public static final String TEXT_XML = "application/xml; charset=UTF-8";  
+  public static final String TEXT_XML = "application/xml; charset=UTF-8";
+  public static final String TEXT_JSON = "application/json; charset=UTF-8";
   
   /**
    * Take a string and make it an iterable ContentStream
@@ -72,7 +73,9 @@ public class ClientUtils
       for( Object v : field ) {
         String update = null;
 
-        if (v instanceof Map) {
+        if(v instanceof SolrInputDocument) {
+          writeVal(writer, name, v , null);
+        } else if (v instanceof Map) {
           // currently only supports a single value
           for (Entry<Object,Object> entry : ((Map<Object,Object>)v).entrySet()) {
             update = entry.getKey().toString();
@@ -112,19 +115,27 @@ public class ClientUtils
       v = Base64.byteArrayToBase64(bytes.array(), bytes.position(),bytes.limit() - bytes.position());
     }
 
+    XML.Writable valWriter = null;
+    if(v instanceof SolrInputDocument) {
+      final SolrInputDocument solrDoc = (SolrInputDocument) v;
+      valWriter = (writer1) -> writeXML(solrDoc, writer1);
+    } else if(v != null) {
+      final Object val = v;
+      valWriter = (writer1) -> XML.escapeCharData(val.toString(), writer1);
+    }
+
     if (update == null) {
       if (v != null) {
-        XML.writeXML(writer, "field", v.toString(), "name", name );
+        XML.writeXML(writer, "field", valWriter, "name", name);
       }
     } else {
       if (v == null)  {
-        XML.writeXML(writer, "field", null, "name", name, "update", update, "null", true);
+        XML.writeXML(writer, "field", (XML.Writable) null, "name", name, "update", update, "null", true);
       } else  {
-        XML.writeXML(writer, "field", v.toString(), "name", name, "update", update);
+        XML.writeXML(writer, "field", valWriter, "name", name, "update", update);
       }
     }
   }
-
 
   public static String toXML( SolrInputDocument doc )
   {
@@ -156,6 +167,35 @@ public class ClientUtils
       }
       sb.append(c);
     }
+    return sb.toString();
+  }
+
+  /**
+   * Returns the value encoded properly so it can be appended after a <pre>name=</pre> local-param.
+   */
+  public static String encodeLocalParamVal(String val) {
+    int len = val.length();
+    int i = 0;
+    if (len > 0 && val.charAt(0) != '$') {
+      for (;i<len; i++) {
+        char ch = val.charAt(i);
+        if (Character.isWhitespace(ch) || ch=='}') break;
+      }
+    }
+
+    if (i>=len) return val;
+
+    // We need to enclose in quotes... but now we need to escape
+    StringBuilder sb = new StringBuilder(val.length() + 4);
+    sb.append('\'');
+    for (i=0; i<len; i++) {
+      char ch = val.charAt(i);
+      if (ch=='\'') {
+        sb.append('\\');
+      }
+      sb.append(ch);
+    }
+    sb.append('\'');
     return sb.toString();
   }
 

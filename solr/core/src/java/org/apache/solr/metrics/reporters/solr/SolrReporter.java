@@ -37,6 +37,7 @@ import com.codahale.metrics.Gauge;
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricFilter;
+import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.ScheduledReporter;
 import com.codahale.metrics.Timer;
 import org.apache.http.client.HttpClient;
@@ -116,6 +117,9 @@ public class SolrReporter extends ScheduledReporter {
     }
   }
 
+  /**
+   * Builder for the {@link SolrReporter} class.
+   */
   public static class Builder {
     private final SolrMetricManager metricManager;
     private final List<Report> reports;
@@ -126,6 +130,7 @@ public class SolrReporter extends ScheduledReporter {
     private boolean skipHistograms;
     private boolean skipAggregateValues;
     private boolean cloudClient;
+    private boolean compact;
     private SolrParams params;
 
     /**
@@ -146,6 +151,7 @@ public class SolrReporter extends ScheduledReporter {
       this.skipHistograms = false;
       this.skipAggregateValues = false;
       this.cloudClient = false;
+      this.compact = true;
       this.params = null;
     }
 
@@ -166,6 +172,16 @@ public class SolrReporter extends ScheduledReporter {
      */
     public Builder cloudClient(boolean cloudClient) {
       this.cloudClient = cloudClient;
+      return this;
+    }
+
+    /**
+     * If true then use "compact" data representation.
+     * @param compact compact representation.
+     * @return {@code this}
+     */
+    public Builder setCompact(boolean compact) {
+      this.compact = compact;
       return this;
     }
 
@@ -244,7 +260,7 @@ public class SolrReporter extends ScheduledReporter {
      */
     public SolrReporter build(HttpClient client, Supplier<String> urlProvider) {
       return new SolrReporter(client, urlProvider, metricManager, reports, handler, reporterId, rateUnit, durationUnit,
-          params, skipHistograms, skipAggregateValues, cloudClient);
+          params, skipHistograms, skipAggregateValues, cloudClient, compact);
     }
 
   }
@@ -258,6 +274,7 @@ public class SolrReporter extends ScheduledReporter {
   private boolean skipHistograms;
   private boolean skipAggregateValues;
   private boolean cloudClient;
+  private boolean compact;
   private ModifiableSolrParams params;
   private Map<String, Object> metadata;
 
@@ -285,11 +302,17 @@ public class SolrReporter extends ScheduledReporter {
     }
   }
 
+  // Recent dropwizard (found with version 4.1.2) requires that you _must_ call the superclass with a non-null registry.
+  // We delegate to registries anyway, so having a dummy registry is harmless.
+  private static final MetricRegistry dummyRegistry = new MetricRegistry();
+
   public SolrReporter(HttpClient httpClient, Supplier<String> urlProvider, SolrMetricManager metricManager,
                       List<Report> metrics, String handler,
                       String reporterId, TimeUnit rateUnit, TimeUnit durationUnit,
-                      SolrParams params, boolean skipHistograms, boolean skipAggregateValues, boolean cloudClient) {
-    super(null, "solr-reporter", MetricFilter.ALL, rateUnit, durationUnit);
+                      SolrParams params, boolean skipHistograms, boolean skipAggregateValues,
+                      boolean cloudClient, boolean compact) {
+    super(dummyRegistry, "solr-reporter", MetricFilter.ALL, rateUnit, durationUnit, null, true);
+
     this.metricManager = metricManager;
     this.urlProvider = urlProvider;
     this.reporterId = reporterId;
@@ -311,6 +334,7 @@ public class SolrReporter extends ScheduledReporter {
     this.skipHistograms = skipHistograms;
     this.skipAggregateValues = skipAggregateValues;
     this.cloudClient = cloudClient;
+    this.compact = compact;
     this.params = new ModifiableSolrParams();
     this.params.set(REPORTER_ID, reporterId);
     // allow overrides to take precedence
@@ -361,7 +385,7 @@ public class SolrReporter extends ScheduledReporter {
         }
         final String effectiveGroup = group;
         MetricUtils.toSolrInputDocuments(metricManager.registry(registryName), Collections.singletonList(report.filter), MetricFilter.ALL,
-            skipHistograms, skipAggregateValues, metadata, doc -> {
+            MetricUtils.PropertyFilter.ALL, skipHistograms, skipAggregateValues, compact, metadata, doc -> {
               doc.setField(REGISTRY_ID, registryName);
               doc.setField(GROUP_ID, effectiveGroup);
               if (effectiveLabel != null) {
@@ -380,7 +404,7 @@ public class SolrReporter extends ScheduledReporter {
       //log.info("%%% sending to " + url + ": " + req.getParams());
       solr.request(req);
     } catch (Exception e) {
-      log.debug("Error sending metric report", e.toString());
+      log.debug("Error sending metric report: {}", e.toString());
     }
 
   }

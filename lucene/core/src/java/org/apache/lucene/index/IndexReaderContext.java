@@ -28,9 +28,9 @@ public abstract class IndexReaderContext {
   public final CompositeReaderContext parent;
   /** <code>true</code> if this context struct represents the top level reader within the hierarchical context */
   public final boolean isTopLevel;
-  /** the doc base for this reader in the parent, <tt>0</tt> if parent is null */
+  /** the doc base for this reader in the parent, <code>0</code> if parent is null */
   public final int docBaseInParent;
-  /** the ord for this reader in the parent, <tt>0</tt> if parent is null */
+  /** the ord for this reader in the parent, <code>0</code> if parent is null */
   public final int ordInParent;
 
   // An object that uniquely identifies this context without referencing
@@ -46,7 +46,15 @@ public abstract class IndexReaderContext {
     this.ordInParent = ordInParent;
     this.isTopLevel = parent==null;
   }
-  
+
+  /** Expert: Return an {@link Object} that uniquely identifies this context.
+   *  The returned object does neither reference this {@link IndexReaderContext}
+   *  nor the wrapped {@link IndexReader}.
+   *  @lucene.experimental */
+  public Object id() {
+    return identity;
+  }
+
   /** Returns the {@link IndexReader}, this context represents. */
   public abstract IndexReader reader();
   

@@ -17,21 +17,20 @@
 package org.apache.solr.schema;
 
 import java.io.File;
-import java.io.StringReader;
 import java.util.Map;
 
 import org.apache.commons.io.FileUtils;
+import org.apache.solr.common.util.Utils;
 import org.apache.solr.rest.schema.TestBulkSchemaAPI;
 import org.apache.solr.util.RestTestBase;
 import org.apache.solr.util.RestTestHarness;
 import org.junit.After;
 import org.junit.Before;
-import org.noggit.JSONParser;
-import org.noggit.ObjectBuilder;
 
 /**
  * Tests the useDocValuesAsStored functionality.
  */
+// See: https://issues.apache.org/jira/browse/SOLR-12028 Tests cannot remove files on Windows machines occasionally
 public class TestUseDocValuesAsStored2 extends RestTestBase {
 
   @Before
@@ -88,9 +87,9 @@ public class TestUseDocValuesAsStored2 extends RestTestBase {
         "                       }\n" +
         "          }\n";
 
-    String response = harness.post("/schema?wt=json", json(payload));
+    String response = harness.post("/schema", json(payload));
 
-    Map m = (Map) ObjectBuilder.getVal(new JSONParser(new StringReader(response)));
+    Map m = (Map) Utils.fromJSONString(response);
     assertNull(response, m.get("errors"));
 
     // default value of useDocValuesAsStored
@@ -140,7 +139,7 @@ public class TestUseDocValuesAsStored2 extends RestTestBase {
         "                       'docValues':true,\n" +
         "                       'indexed':false\n" +
         "                       }}";
-    response = harness.post("/schema?wt=json", json(payload));
+    response = harness.post("/schema", json(payload));
     m = TestBulkSchemaAPI.getObj(harness, "a1", "fields");
     assertNotNull("field a1 doesn't exist any more", m);
     assertEquals(Boolean.FALSE, m.get("useDocValuesAsStored"));
@@ -155,7 +154,7 @@ public class TestUseDocValuesAsStored2 extends RestTestBase {
         "                       'docValues':true,\n" +
         "                       'indexed':false\n" +
         "                       }}";
-    response = harness.post("/schema?wt=json", json(payload));
+    response = harness.post("/schema", json(payload));
     m = TestBulkSchemaAPI.getObj(harness, "a1", "fields");
     assertNotNull("field a1 doesn't exist any more", m);
     assertEquals(Boolean.TRUE, m.get("useDocValuesAsStored"));
@@ -169,7 +168,7 @@ public class TestUseDocValuesAsStored2 extends RestTestBase {
         "                       'docValues':true,\n" +
         "                       'indexed':true\n" +
         "                       }}";
-    response = harness.post("/schema?wt=json", json(payload));
+    response = harness.post("/schema", json(payload));
     m = TestBulkSchemaAPI.getObj(harness, "a4", "fields");
     assertNotNull("field a4 not found", m);
     assertEquals(Boolean.TRUE, m.get("useDocValuesAsStored"));

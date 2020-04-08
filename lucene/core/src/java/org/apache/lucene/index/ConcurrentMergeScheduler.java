@@ -47,7 +47,7 @@ import org.apache.lucene.util.ThreadInterruptedException;
  *
  *  <p>If more than {@link #getMaxMergeCount} merges are
  *  requested then this class will forcefully throttle the
- *  incoming threads by pausing until one more more merges
+ *  incoming threads by pausing until one more merges
  *  complete.</p>
  *
  *  <p>This class attempts to detect whether the index is
@@ -418,7 +418,8 @@ public class ConcurrentMergeScheduler extends MergeScheduler {
         if (value != null) {
           spins = Boolean.parseBoolean(value);
         }
-      } catch (Throwable ignored) {
+      } catch (Exception ignored) {
+        // that's fine we might hit a SecurityException etc. here just continue
       }
       setDefaultMaxMergesAndThreads(spins);
       if (verbose()) {

@@ -31,7 +31,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.analysis.Token;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
@@ -60,8 +59,8 @@ import org.apache.solr.schema.FieldType;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.search.DocSet;
 import org.apache.solr.search.QParser;
-import org.apache.solr.search.SyntaxError;
 import org.apache.solr.search.SolrIndexSearcher;
+import org.apache.solr.search.SyntaxError;
 import org.apache.solr.spelling.AbstractLuceneSpellChecker;
 import org.apache.solr.spelling.ConjunctionSolrSpellChecker;
 import org.apache.solr.spelling.IndexBasedSpellChecker;
@@ -72,6 +71,7 @@ import org.apache.solr.spelling.SpellCheckCollator;
 import org.apache.solr.spelling.SpellingOptions;
 import org.apache.solr.spelling.SpellingQueryConverter;
 import org.apache.solr.spelling.SpellingResult;
+import org.apache.solr.spelling.Token;
 import org.apache.solr.util.plugin.SolrCoreAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,7 +87,7 @@ import org.slf4j.LoggerFactory;
  * @since solr 1.3
  */
 public class SpellCheckComponent extends SearchComponent implements SolrCoreAware, SpellingParams {
-  private static final Logger LOG = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   public static final boolean DEFAULT_ONLY_MORE_POPULAR = false;
 
@@ -171,12 +171,12 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
           customParams.add(getCustomParams(checkerName, params));
         }
 
-        Integer hitsInteger = (Integer) rb.rsp.getToLog().get("hits");
+        Number hitsLong = (Number) rb.rsp.getToLog().get("hits");
         long hits = 0;
-        if (hitsInteger == null) {
+        if (hitsLong == null) {
           hits = rb.getNumberDocumentsFound();
         } else {
-          hits = hitsInteger.longValue();
+          hits = hitsLong.longValue();
         }
         
         SpellingResult spellingResult = null;
@@ -199,7 +199,8 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
         boolean isCorrectlySpelled = hits > (maxResultsForSuggest==null ? 0 : maxResultsForSuggest);
 
         NamedList response = new SimpleOrderedMap();
-        response.add("suggestions", toNamedList(shardRequest, spellingResult, q, extendedResults));
+        NamedList suggestions = toNamedList(shardRequest, spellingResult, q, extendedResults);
+        response.add("suggestions", suggestions);
 
         if (extendedResults) {
           response.add("correctlySpelled", isCorrectlySpelled);
@@ -257,10 +258,10 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
             }
           }
         } catch (IOException e){
-          LOG.error(e.toString());
+          log.error(e.toString());
           return null;
         } catch (SyntaxError e) {
-          LOG.error(e.toString());
+          log.error(e.toString());
           return null;
         }
         
@@ -299,7 +300,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
     //even in cases when the internal rank is the same.
     Collections.sort(collations);
 
-    NamedList collationList = new SimpleOrderedMap();
+    NamedList collationList = new NamedList();
     for (SpellCheckCollation collation : collations) {
       if (collationExtendedResults) {
         NamedList extendedResult = new SimpleOrderedMap();
@@ -338,10 +339,10 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
   protected SolrParams getCustomParams(String dictionary, SolrParams params) {
     ModifiableSolrParams result = new ModifiableSolrParams();
     Iterator<String> iter = params.getParameterNamesIterator();
-    String prefix = SpellingParams.SPELLCHECK_PREFIX + "." + dictionary + ".";
-    while (iter.hasNext()){
+    String prefix = SpellingParams.SPELLCHECK_PREFIX + dictionary + ".";
+    while (iter.hasNext()) {
       String nxt = iter.next();
-      if (nxt.startsWith(prefix)){
+      if (nxt.startsWith(prefix)) {
         result.add(nxt.substring(prefix.length()), params.getParams(nxt));
       }
     }
@@ -400,13 +401,13 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
           try {
             nl = (NamedList) srsp.getSolrResponse().getResponse().get("spellcheck");
           } catch (Exception e) {
-            if (rb.req.getParams().getBool(ShardParams.SHARDS_TOLERANT, false)) {
+            if (ShardParams.getShardsTolerantAsBool(rb.req.getParams())) {
               continue; // looks like a shard did not return anything
             }
             throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
                 "Unable to read spelling info for shard: " + srsp.getShard(), e);
           }
-          LOG.info(srsp.getShard() + " " + nl);
+          log.info(srsp.getShard() + " " + nl);
           if (nl != null) {
             mergeData.totalNumberShardResponses++;
             collectShardSuggestions(nl, mergeData);
@@ -423,7 +424,8 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
 
     NamedList response = new SimpleOrderedMap();
 
-    response.add("suggestions", toNamedList(false, result, origQuery, extendedResults));
+    NamedList suggestions = toNamedList(false, result, origQuery, extendedResults);
+    response.add("suggestions", suggestions);
 
     if (extendedResults) {
       response.add("correctlySpelled", isCorrectlySpelled);
@@ -434,7 +436,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
           .toArray(new SpellCheckCollation[mergeData.collations.size()]);
       Arrays.sort(sortedCollations);
 
-      NamedList collations = new SimpleOrderedMap();
+      NamedList collations = new NamedList();
       int i = 0;
       while (i < maxCollations && i < sortedCollations.length) {
         SpellCheckCollation collation = sortedCollations[i];
@@ -541,7 +543,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
             NamedList expandedCollation = (NamedList) o;
             SpellCheckCollation coll = new SpellCheckCollation();
             coll.setCollationQuery((String) expandedCollation.get("collationQuery"));
-            coll.setHits((Integer) expandedCollation.get("hits"));
+            coll.setHits(((Number) expandedCollation.get("hits")).longValue());
             if(maxCollationTries>0)
             {
               coll.setInternalRank((Integer) expandedCollation.get("collationInternalRank"));
@@ -634,7 +636,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
 
   protected NamedList toNamedList(boolean shardRequest,
       SpellingResult spellingResult, String origQuery, boolean extendedResults) {
-    NamedList result = new SimpleOrderedMap();
+    NamedList result = new NamedList();
     Map<Token,LinkedHashMap<String,Integer>> suggestions = spellingResult
         .getSuggestions();
     boolean hasFreqInfo = spellingResult.hasTokenFrequencyInfo();
@@ -702,7 +704,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
   @Override
   public void inform(SolrCore core) {
     if (initParams != null) {
-      LOG.info("Initializing spell checkers");
+      log.info("Initializing spell checkers");
       boolean hasDefault = false;
       for (int i = 0; i < initParams.size(); i++) {
         if (initParams.getName(i).equals("spellchecker")) {
@@ -726,7 +728,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
 
       //ensure that there is at least one query converter defined
       if (queryConverters.size() == 0) {
-        LOG.trace("No queryConverter defined, using default converter");
+        log.trace("No queryConverter defined, using default converter");
         queryConverters.put("queryConverter", new SpellingQueryConverter());
       }
 
@@ -776,7 +778,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
       boolean buildOnCommit = Boolean.parseBoolean((String) spellchecker.get("buildOnCommit"));
       boolean buildOnOptimize = Boolean.parseBoolean((String) spellchecker.get("buildOnOptimize"));
       if (buildOnCommit || buildOnOptimize) {
-        LOG.info("Registering newSearcher listener for spellchecker: " + checker.getDictionaryName());
+        log.info("Registering newSearcher listener for spellchecker: " + checker.getDictionaryName());
         core.registerNewSearcherListener(new SpellCheckerListener(core, checker, buildOnCommit, buildOnOptimize));
       }
     } else {
@@ -808,11 +810,11 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
       if (currentSearcher == null) {
         // firstSearcher event
         try {
-          LOG.info("Loading spell index for spellchecker: "
+          log.info("Loading spell index for spellchecker: "
                   + checker.getDictionaryName());
           checker.reload(core, newSearcher);
         } catch (IOException e) {
-          LOG.error( "Exception in reloading spell check index for spellchecker: " + checker.getDictionaryName(), e);
+          log.error( "Exception in reloading spell check index for spellchecker: " + checker.getDictionaryName(), e);
         }
       } else {
         // newSearcher event
@@ -822,7 +824,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
           if (newSearcher.getIndexReader().leaves().size() == 1)  {
             buildSpellIndex(newSearcher);
           } else  {
-            LOG.info("Index is not optimized therefore skipping building spell check index for: " + checker.getDictionaryName());
+            log.info("Index is not optimized therefore skipping building spell check index for: " + checker.getDictionaryName());
           }
         }
       }
@@ -831,10 +833,10 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
 
     private void buildSpellIndex(SolrIndexSearcher newSearcher) {
       try {
-        LOG.info("Building spell index for spell checker: " + checker.getDictionaryName());
+        log.info("Building spell index for spell checker: " + checker.getDictionaryName());
         checker.build(core, newSearcher);
       } catch (Exception e) {
-        LOG.error(
+        log.error(
                 "Exception in building spell check index for spellchecker: " + checker.getDictionaryName(), e);
       }
     }
@@ -853,7 +855,7 @@ public class SpellCheckComponent extends SearchComponent implements SolrCoreAwar
   }
 
   // ///////////////////////////////////////////
-  // / SolrInfoMBean
+  // / SolrInfoBean
   // //////////////////////////////////////////
 
   @Override

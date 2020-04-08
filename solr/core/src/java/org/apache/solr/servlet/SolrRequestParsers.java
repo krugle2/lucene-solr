@@ -16,8 +16,7 @@
  */
 package org.apache.solr.servlet;
 
-import static org.apache.solr.common.params.CommonParams.PATH;
-
+import javax.servlet.http.HttpServletRequest;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -39,8 +38,6 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
-import javax.servlet.http.HttpServletRequest;
-
 import org.apache.commons.fileupload.FileItem;
 import org.apache.commons.fileupload.disk.DiskFileItemFactory;
 import org.apache.commons.fileupload.servlet.ServletFileUpload;
@@ -53,6 +50,7 @@ import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.MultiMapSolrParams;
 import org.apache.solr.common.params.SolrParams;
+import org.apache.solr.common.util.CommandOperation;
 import org.apache.solr.common.util.ContentStream;
 import org.apache.solr.common.util.ContentStreamBase;
 import org.apache.solr.common.util.FastInputStream;
@@ -61,9 +59,11 @@ import org.apache.solr.core.SolrConfig;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrQueryRequestBase;
-import org.apache.solr.util.CommandOperation;
 import org.apache.solr.util.RTimerTree;
 import org.apache.solr.util.SolrFileCleaningTracker;
+import org.apache.solr.util.tracing.GlobalTracer;
+
+import static org.apache.solr.common.params.CommonParams.PATH;
 
 
 public class SolrRequestParsers 
@@ -85,6 +85,7 @@ public class SolrRequestParsers
   private final HashMap<String, SolrRequestParser> parsers =
       new HashMap<>();
   private final boolean enableRemoteStreams;
+  private final boolean enableStreamBody;
   private StandardRequestParser standard;
   private boolean handleSelect = true;
   private boolean addHttpRequestToContext;
@@ -102,8 +103,9 @@ public class SolrRequestParsers
     final int multipartUploadLimitKB, formUploadLimitKB;
     if( globalConfig == null ) {
       multipartUploadLimitKB = formUploadLimitKB = Integer.MAX_VALUE; 
-      enableRemoteStreams = true;
-      handleSelect = true;
+      enableRemoteStreams = false;
+      enableStreamBody = false;
+      handleSelect = false;
       addHttpRequestToContext = false;
     } else {
       multipartUploadLimitKB = globalConfig.getMultipartUploadLimitKB();
@@ -111,6 +113,7 @@ public class SolrRequestParsers
       formUploadLimitKB = globalConfig.getFormUploadLimitKB();
       
       enableRemoteStreams = globalConfig.isEnableRemoteStreams();
+      enableStreamBody = globalConfig.isEnableStreamBody();
   
       // Let this filter take care of /select?xxx format
       handleSelect = globalConfig.isHandleSelect();
@@ -122,9 +125,10 @@ public class SolrRequestParsers
   
   private SolrRequestParsers() {
     enableRemoteStreams = false;
+    enableStreamBody = false;
     handleSelect = false;
     addHttpRequestToContext = false;
-    init(2048, 2048);
+    init(Integer.MAX_VALUE, Integer.MAX_VALUE);
   }
 
   private void init( int multipartUploadLimitKB, int formUploadLimitKB) {       
@@ -162,6 +166,9 @@ public class SolrRequestParsers
     // Pick the parser from the request...
     ArrayList<ContentStream> streams = new ArrayList<>(1);
     SolrParams params = parser.parseParamsAndFillStreams( req, streams );
+    if (GlobalTracer.get().tracing()) {
+      GlobalTracer.get().getTracer().activeSpan().setTag("params", params.toString());
+    }
     SolrQueryRequest sreq = buildRequestFrom(core, params, streams, getRequestTimer(req), req);
 
     // Handlers and login will want to know the path. If it contains a ':'
@@ -203,7 +210,7 @@ public class SolrRequestParsers
     strs = params.getParams( CommonParams.STREAM_FILE );
     if( strs != null ) {
       if( !enableRemoteStreams ) {
-        throw new SolrException( ErrorCode.BAD_REQUEST, "Remote Streaming is disabled." );
+        throw new SolrException( ErrorCode.BAD_REQUEST, "Remote Streaming is disabled. See http://lucene.apache.org/solr/guide/requestdispatcher-in-solrconfig.html for help" );
       }
       for( final String file : strs ) {
         ContentStreamBase stream = new ContentStreamBase.FileStream( new File(file) );
@@ -217,6 +224,9 @@ public class SolrRequestParsers
     // Check for streams in the request parameters
     strs = params.getParams( CommonParams.STREAM_BODY );
     if( strs != null ) {
+      if( !enableStreamBody ) {
+        throw new SolrException( ErrorCode.BAD_REQUEST, "Stream Body is disabled. See http://lucene.apache.org/solr/guide/requestdispatcher-in-solrconfig.html for help" );
+      }
       for( final String body : strs ) {
         ContentStreamBase stream = new ContentStreamBase.StringStream( body );
         if( contentType != null ) {
@@ -259,7 +269,10 @@ public class SolrRequestParsers
     }
     return q;
   }
-  
+
+  private static HttpSolrCall getHttpSolrCall(HttpServletRequest req) {
+    return req == null ? null : (HttpSolrCall) req.getAttribute(HttpSolrCall.class.getName());
+  }
   /**
    * Given a url-encoded query string (UTF-8), map it into solr params
    */
@@ -513,7 +526,10 @@ public class SolrRequestParsers
 
     @Override
     public InputStream getStream() throws IOException {
-      // Protect container owned streams from being closed by us, see SOLR-8933
+      // we explicitly protect this servlet stream from being closed
+      // so that it does not trip our test assert in our close shield
+      // in SolrDispatchFilter - we must allow closes from getStream
+      // due to the other impls of ContentStream
       return new CloseShieldInputStream(req.getInputStream());
     }
   }
@@ -719,6 +735,7 @@ public class SolrRequestParsers
       String contentType = req.getContentType();
       String method = req.getMethod(); // No need to uppercase... HTTP verbs are case sensitive
       String uri = req.getRequestURI();
+      boolean isV2 = getHttpSolrCall(req) instanceof V2HttpCall;
       boolean isPost = "POST".equals(method);
 
       // SOLR-6787 changed the behavior of a POST without content type.  Previously it would throw an exception,
@@ -735,6 +752,9 @@ public class SolrRequestParsers
       // were handled by restlet if the URI contained /schema or /config
       // "handled by restlet" means that we don't attempt to handle any request body here.
       if (!isPost) {
+        if (isV2) {
+          return raw.parseParamsAndFillStreams(req, streams);
+        }
         if (contentType == null) {
           return parseQueryString(req.getQueryString());
         }
@@ -744,10 +764,6 @@ public class SolrRequestParsers
         boolean restletPath = false;
         int idx = uri.indexOf("/schema");
         if (idx >= 0 && uri.endsWith("/schema") || uri.contains("/schema/")) {
-          restletPath = true;
-        }
-        idx = uri.indexOf("/config");
-        if (idx >= 0 && uri.endsWith("/config") || uri.contains("/config/")) {
           restletPath = true;
         }
 
@@ -765,8 +781,7 @@ public class SolrRequestParsers
         String userAgent = req.getHeader("User-Agent");
         boolean isCurl = userAgent != null && userAgent.startsWith("curl/");
 
-        // Protect container owned streams from being closed by us, see SOLR-8933
-        FastInputStream input = FastInputStream.wrap( new CloseShieldInputStream(req.getInputStream()) );
+        FastInputStream input = FastInputStream.wrap(req.getInputStream());
 
         if (isCurl) {
           SolrParams params = autodetect(req, streams, input);

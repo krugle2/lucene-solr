@@ -17,13 +17,12 @@
 
 package org.apache.solr.util.stats;
 
-import com.codahale.metrics.Gauge;
-import com.codahale.metrics.MetricRegistry;
 import org.apache.http.config.Registry;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.solr.metrics.SolrMetricManager;
 import org.apache.solr.metrics.SolrMetricProducer;
+import org.apache.solr.metrics.SolrMetricsContext;
 
 /**
  * Sub-class of PoolingHttpClientConnectionManager which tracks metrics interesting to Solr.
@@ -31,42 +30,38 @@ import org.apache.solr.metrics.SolrMetricProducer;
  */
 public class InstrumentedPoolingHttpClientConnectionManager extends PoolingHttpClientConnectionManager implements SolrMetricProducer {
 
-  protected MetricRegistry metricsRegistry;
+  private SolrMetricsContext solrMetricsContext;
 
   public InstrumentedPoolingHttpClientConnectionManager(Registry<ConnectionSocketFactory> socketFactoryRegistry) {
     super(socketFactoryRegistry);
   }
 
-  public MetricRegistry getMetricsRegistry() {
-    return metricsRegistry;
-  }
-
-  public void setMetricsRegistry(MetricRegistry metricRegistry) {
-    this.metricsRegistry = metricRegistry;
+  @Override
+  public SolrMetricsContext getSolrMetricsContext() {
+    return solrMetricsContext;
   }
 
   @Override
-  public void initializeMetrics(SolrMetricManager manager, String registry, String scope) {
-    this.metricsRegistry = manager.registry(registry);
-    metricsRegistry.register(SolrMetricManager.mkName("availableConnections", scope),
-        (Gauge<Integer>) () -> {
-          // this acquires a lock on the connection pool; remove if contention sucks
-          return getTotalStats().getAvailable();
-        });
-    metricsRegistry.register(SolrMetricManager.mkName("leasedConnections", scope),
-        (Gauge<Integer>) () -> {
-          // this acquires a lock on the connection pool; remove if contention sucks
-          return getTotalStats().getLeased();
-        });
-    metricsRegistry.register(SolrMetricManager.mkName("maxConnections", scope),
-        (Gauge<Integer>) () -> {
-          // this acquires a lock on the connection pool; remove if contention sucks
-          return getTotalStats().getMax();
-        });
-    metricsRegistry.register(SolrMetricManager.mkName("pendingConnections", scope),
-        (Gauge<Integer>) () -> {
-          // this acquires a lock on the connection pool; remove if contention sucks
-          return getTotalStats().getPending();
-        });
+  public void initializeMetrics(SolrMetricsContext parentContext, String scope) {
+    this.solrMetricsContext = parentContext.getChildContext(this);
+    solrMetricsContext.gauge(() -> getTotalStats().getAvailable(),
+        true, SolrMetricManager.mkName("availableConnections", scope));
+    // this acquires a lock on the connection pool; remove if contention sucks
+    solrMetricsContext.gauge(() -> getTotalStats().getLeased(),
+        true, SolrMetricManager.mkName("leasedConnections", scope));
+    solrMetricsContext.gauge(() -> getTotalStats().getMax(),
+        true, SolrMetricManager.mkName("maxConnections", scope));
+    solrMetricsContext.gauge(() -> getTotalStats().getPending(),
+        true, SolrMetricManager.mkName("pendingConnections", scope));
+  }
+
+  @Override
+  public void close() {
+    super.close();
+    try {
+      SolrMetricProducer.super.close();
+    } catch (Exception e) {
+      throw new RuntimeException("Exception closing.", e);
+    }
   }
 }

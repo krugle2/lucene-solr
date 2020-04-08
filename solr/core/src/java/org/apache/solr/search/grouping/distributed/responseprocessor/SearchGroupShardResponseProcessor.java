@@ -47,16 +47,13 @@ import org.apache.solr.search.grouping.distributed.shardresultserializer.SearchG
  */
 public class SearchGroupShardResponseProcessor implements ShardResponseProcessor {
 
-  /**
-   * {@inheritDoc}
-   */
   @Override
   public void process(ResponseBuilder rb, ShardRequest shardRequest) {
-    SortSpec ss = rb.getSortSpec();
-    Sort groupSort = rb.getGroupingSpec().getGroupSort();
+    SortSpec groupSortSpec = rb.getGroupingSpec().getGroupSortSpec();
+    Sort groupSort = rb.getGroupingSpec().getGroupSortSpec().getSort();
     final String[] fields = rb.getGroupingSpec().getFields();
-    Sort sortWithinGroup = rb.getGroupingSpec().getSortWithinGroup();
-    assert sortWithinGroup != null;
+    Sort withinGroupSort = rb.getGroupingSpec().getWithinGroupSortSpec().getSort();
+    assert withinGroupSort != null;
 
     final Map<String, List<Collection<SearchGroup<BytesRef>>>> commandSearchGroups = new HashMap<>(fields.length, 1.0f);
     final Map<String, Map<SearchGroup<BytesRef>, Set<String>>> tempSearchGroupToShards = new HashMap<>(fields.length, 1.0f);
@@ -102,24 +99,23 @@ public class SearchGroupShardResponseProcessor implements ShardResponseProcessor
         }
         shardInfo.add(srsp.getShard(), nl);
       }
-      if (rb.req.getParams().getBool(ShardParams.SHARDS_TOLERANT, false) && srsp.getException() != null) {
-        if(rb.rsp.getResponseHeader().get(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY) == null) {
-          rb.rsp.getResponseHeader().add(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY, Boolean.TRUE);
-        }
+      if (ShardParams.getShardsTolerantAsBool(rb.req.getParams()) && srsp.getException() != null) {
+        rb.rsp.getResponseHeader().asShallowMap().put(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY, Boolean.TRUE);
         continue; // continue if there was an error and we're tolerant.
       }
       maxElapsedTime = (int) Math.max(maxElapsedTime, srsp.getSolrResponse().getElapsedTime());
       @SuppressWarnings("unchecked")
       NamedList<NamedList> firstPhaseResult = (NamedList<NamedList>) srsp.getSolrResponse().getResponse().get("firstPhase");
-      final Map<String, SearchGroupsFieldCommandResult> result = serializer.transformToNative(firstPhaseResult, groupSort, sortWithinGroup, srsp.getShard());
-      for (String field : commandSearchGroups.keySet()) {
+      final Map<String, SearchGroupsFieldCommandResult> result = serializer.transformToNative(firstPhaseResult, groupSort, withinGroupSort, srsp.getShard());
+      for (Map.Entry<String, List<Collection<SearchGroup<BytesRef>>>> entry : commandSearchGroups.entrySet()) {
+        String field = entry.getKey();
         final SearchGroupsFieldCommandResult firstPhaseCommandResult = result.get(field);
 
         final Integer groupCount = firstPhaseCommandResult.getGroupCount();
         if (groupCount != null) {
           Integer existingGroupCount = rb.mergedGroupCounts.get(field);
           // Assuming groups don't cross shard boundary...
-          rb.mergedGroupCounts.put(field, existingGroupCount != null ? existingGroupCount + groupCount : groupCount);
+          rb.mergedGroupCounts.put(field, existingGroupCount != null ? Integer.valueOf(existingGroupCount + groupCount) : groupCount);
         }
 
         final Collection<SearchGroup<BytesRef>> searchGroups = firstPhaseCommandResult.getSearchGroups();
@@ -127,7 +123,7 @@ public class SearchGroupShardResponseProcessor implements ShardResponseProcessor
           continue;
         }
 
-        commandSearchGroups.get(field).add(searchGroups);
+        entry.getValue().add(searchGroups);
         for (SearchGroup<BytesRef> searchGroup : searchGroups) {
           Map<SearchGroup<BytesRef>, Set<String>> map = tempSearchGroupToShards.get(field);
           Set<String> shards = map.get(searchGroup);
@@ -142,9 +138,10 @@ public class SearchGroupShardResponseProcessor implements ShardResponseProcessor
     }
     rb.totalHitCount = hitCountDuringFirstPhase;
     rb.firstPhaseElapsedTime = maxElapsedTime;
-    for (String groupField : commandSearchGroups.keySet()) {
-      List<Collection<SearchGroup<BytesRef>>> topGroups = commandSearchGroups.get(groupField);
-      Collection<SearchGroup<BytesRef>> mergedTopGroups = SearchGroup.merge(topGroups, ss.getOffset(), ss.getCount(), groupSort);
+    for (Map.Entry<String, List<Collection<SearchGroup<BytesRef>>>> entry : commandSearchGroups.entrySet()) {
+      String groupField = entry.getKey();
+      List<Collection<SearchGroup<BytesRef>>> topGroups = entry.getValue();
+      Collection<SearchGroup<BytesRef>> mergedTopGroups = SearchGroup.merge(topGroups, groupSortSpec.getOffset(), groupSortSpec.getCount(), groupSort);
       if (mergedTopGroups == null) {
         continue;
       }

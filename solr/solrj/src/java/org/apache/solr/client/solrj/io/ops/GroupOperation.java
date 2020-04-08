@@ -39,6 +39,8 @@ import org.apache.solr.client.solrj.io.stream.expr.StreamExpressionParameter;
 import org.apache.solr.client.solrj.io.stream.expr.StreamExpressionValue;
 import org.apache.solr.client.solrj.io.stream.expr.StreamFactory;
 
+import static org.apache.solr.common.params.CommonParams.SORT;
+
 public class GroupOperation implements ReduceOperation {
 
   private static final long serialVersionUID = 1L;
@@ -52,7 +54,7 @@ public class GroupOperation implements ReduceOperation {
   public GroupOperation(StreamExpression expression, StreamFactory factory) throws IOException {
 
     StreamExpressionNamedParameter nParam = factory.getNamedOperand(expression, "n");
-    StreamExpressionNamedParameter sortExpression = factory.getNamedOperand(expression, "sort");
+    StreamExpressionNamedParameter sortExpression = factory.getNamedOperand(expression, SORT);
 
     StreamComparator streamComparator = factory.constructComparator(((StreamExpressionValue) sortExpression.getParameter()).getValue(), FieldComparator.class);
     String nStr = ((StreamExpressionValue)nParam.getParameter()).getValue();
@@ -87,7 +89,7 @@ public class GroupOperation implements ReduceOperation {
     expression.addParameter(new StreamExpressionNamedParameter("n", Integer.toString(size)));
 
     // sort
-    expression.addParameter(new StreamExpressionNamedParameter("sort", streamComparator.toExpression(factory)));
+    expression.addParameter(new StreamExpressionNamedParameter(SORT, streamComparator.toExpression(factory)));
     return expression;
   }
 
@@ -104,17 +106,15 @@ public class GroupOperation implements ReduceOperation {
   }
 
   public Tuple reduce() {
-    Map map = new HashMap();
-    List<Map> list = new ArrayList();
     LinkedList ll = new LinkedList();
     while(priorityQueue.size() > 0) {
       ll.addFirst(priorityQueue.poll().getMap());
       //This will clear priority queue and so it will be ready for the next group.
     }
 
-    list.addAll(ll);
+    List<Map> list = new ArrayList(ll);
     Map groupHead = list.get(0);
-    map.putAll(groupHead);
+    Map map = new HashMap(groupHead);
     map.put("group", list);
     return new Tuple(map);
   }
@@ -131,7 +131,7 @@ public class GroupOperation implements ReduceOperation {
     }
   }
 
-  class ReverseComp implements Comparator<Tuple>, Serializable {
+  static class ReverseComp implements Comparator<Tuple>, Serializable {
     private StreamComparator comp;
 
     public ReverseComp(StreamComparator comp) {

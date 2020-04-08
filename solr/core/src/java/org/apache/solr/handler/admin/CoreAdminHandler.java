@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 
 import com.google.common.collect.ImmutableMap;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.solr.api.Api;
 import org.apache.solr.cloud.CloudDescriptor;
 import org.apache.solr.cloud.ZkController;
@@ -44,7 +44,9 @@ import org.apache.solr.common.util.NamedList;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.CoreDescriptor;
 import org.apache.solr.handler.RequestHandlerBase;
+import org.apache.solr.logging.MDCLoggingContext;
 import org.apache.solr.metrics.SolrMetricManager;
+import org.apache.solr.metrics.SolrMetricsContext;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.security.AuthorizationContext;
@@ -119,10 +121,10 @@ public class CoreAdminHandler extends RequestHandlerBase implements PermissionNa
   }
 
   @Override
-  public void initializeMetrics(SolrMetricManager manager, String registryName, String scope) {
-    super.initializeMetrics(manager, registryName, scope);
-    parallelExecutor = MetricUtils.instrumentedExecutorService(parallelExecutor, manager.registry(registryName),
-        SolrMetricManager.mkName("parallelCoreAdminExecutor", getCategory().name(),scope, "threadPool"));
+  public void initializeMetrics(SolrMetricsContext parentContext, String scope) {
+    super.initializeMetrics(parentContext, scope);
+    parallelExecutor = MetricUtils.instrumentedExecutorService(parallelExecutor, this, solrMetricsContext.getMetricRegistry(),
+        SolrMetricManager.mkName("parallelCoreAdminExecutor", getCategory().name(), scope, "threadPool"));
   }
   @Override
   public Boolean registerV2() {
@@ -170,6 +172,11 @@ public class CoreAdminHandler extends RequestHandlerBase implements PermissionNa
       }
 
       final CallInfo callInfo = new CallInfo(this, req, rsp, op);
+      String coreName = req.getParams().get(CoreAdminParams.CORE);
+      if (coreName == null) {
+        coreName = req.getParams().get(CoreAdminParams.NAME);
+      }
+      MDCLoggingContext.setCoreName(coreName);
       if (taskId == null) {
         callInfo.call();
       } else {
@@ -188,8 +195,9 @@ public class CoreAdminHandler extends RequestHandlerBase implements PermissionNa
               removeTask("running", taskObject.taskId);
               if (exceptionCaught) {
                 addTask("failed", taskObject, true);
-              } else
+              } else {
                 addTask("completed", taskObject, true);
+              }
             }
           });
         } finally {
@@ -227,6 +235,7 @@ public class CoreAdminHandler extends RequestHandlerBase implements PermissionNa
       .put(CoreAdminParams.ROLES, CoreDescriptor.CORE_ROLES)
       .put(CoreAdminParams.CORE_NODE_NAME, CoreDescriptor.CORE_NODE_NAME)
       .put(ZkStateReader.NUM_SHARDS_PROP, CloudDescriptor.NUM_SHARDS)
+      .put(CoreAdminParams.REPLICA_TYPE, CloudDescriptor.REPLICA_TYPE)
       .build();
 
   protected static Map<String, String> buildCoreParams(SolrParams params) {
@@ -234,10 +243,10 @@ public class CoreAdminHandler extends RequestHandlerBase implements PermissionNa
     Map<String, String> coreParams = new HashMap<>();
 
     // standard core create parameters
-    for (String param : paramToProp.keySet()) {
-      String value = params.get(param, null);
+    for (Map.Entry<String, String> entry : paramToProp.entrySet()) {
+      String value = params.get(entry.getKey(), null);
       if (StringUtils.isNotEmpty(value)) {
-        coreParams.put(paramToProp.get(param), value);
+        coreParams.put(entry.getValue(), value);
       }
     }
 
@@ -364,7 +373,7 @@ public class CoreAdminHandler extends RequestHandlerBase implements PermissionNa
    * Method to ensure shutting down of the ThreadPool Executor.
    */
   public void shutdown() {
-    if (parallelExecutor != null && !parallelExecutor.isShutdown())
+    if (parallelExecutor != null)
       ExecutorUtil.shutdownAndAwaitTermination(parallelExecutor);
   }
 
@@ -405,7 +414,16 @@ public class CoreAdminHandler extends RequestHandlerBase implements PermissionNa
   public interface Invocable {
     Map<String, Object> invoke(SolrQueryRequest req);
   }
+  
   interface CoreAdminOp {
+   /**
+    * @param it request/response object
+    *
+    * If the request is invalid throw a SolrException with SolrException.ErrorCode.BAD_REQUEST ( 400 )
+    * If the execution of the command fails throw a SolrException with SolrException.ErrorCode.SERVER_ERROR ( 500 )
+    * 
+    * Any non-SolrException's are wrapped at a higher level as a SolrException with SolrException.ErrorCode.SERVER_ERROR.
+    */
     void execute(CallInfo it) throws Exception;
   }
 }

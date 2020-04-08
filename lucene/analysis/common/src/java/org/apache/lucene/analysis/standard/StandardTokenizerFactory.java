@@ -30,8 +30,15 @@ import java.util.Map;
  *     &lt;tokenizer class="solr.StandardTokenizerFactory" maxTokenLength="255"/&gt;
  *   &lt;/analyzer&gt;
  * &lt;/fieldType&gt;</pre> 
+ *
+ * @since 3.1
+ * @lucene.spi {@value #NAME}
  */
 public class StandardTokenizerFactory extends TokenizerFactory {
+
+  /** SPI name */
+  public static final String NAME = "standard";
+
   private final int maxTokenLength;
   
   /** Creates a new StandardTokenizerFactory */
@@ -41,6 +48,11 @@ public class StandardTokenizerFactory extends TokenizerFactory {
     if (!args.isEmpty()) {
       throw new IllegalArgumentException("Unknown parameters: " + args);
     }
+  }
+
+  /** Default ctor for compatibility with SPI */
+  public StandardTokenizerFactory() {
+    throw defaultCtorException();
   }
 
   @Override

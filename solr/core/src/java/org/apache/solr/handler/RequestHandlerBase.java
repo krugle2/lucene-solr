@@ -17,32 +17,33 @@
 package org.apache.solr.handler;
 
 import java.lang.invoke.MethodHandles;
-import java.net.URL;
 import java.util.Collection;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
-import com.google.common.collect.ImmutableList;
 import com.codahale.metrics.Counter;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.Timer;
+import com.google.common.collect.ImmutableList;
+import org.apache.solr.api.Api;
+import org.apache.solr.api.ApiBag;
+import org.apache.solr.api.ApiSupport;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.params.CommonParams;
+import org.apache.solr.common.params.ShardParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
-import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.common.util.SuppressForbidden;
 import org.apache.solr.core.PluginBag;
 import org.apache.solr.core.PluginInfo;
-import org.apache.solr.core.SolrInfoMBean;
-import org.apache.solr.metrics.SolrMetricManager;
-import org.apache.solr.metrics.SolrMetricProducer;
+import org.apache.solr.core.SolrInfoBean;
+import org.apache.solr.metrics.MetricsMap;
+import org.apache.solr.metrics.SolrMetricsContext;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestHandler;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.search.SyntaxError;
 import org.apache.solr.util.SolrPluginUtils;
-import org.apache.solr.api.Api;
-import org.apache.solr.api.ApiBag;
-import org.apache.solr.api.ApiSupport;
-import org.apache.solr.util.stats.MetricUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,7 +52,7 @@ import static org.apache.solr.core.RequestParams.USEPARAM;
 /**
  *
  */
-public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfoMBean, SolrMetricProducer, NestedRequestHandler,ApiSupport {
+public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfoBean, NestedRequestHandler, ApiSupport {
 
   protected NamedList initArgs = null;
   protected SolrParams defaults;
@@ -65,14 +66,22 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
   private Meter numClientErrors = new Meter();
   private Meter numTimeouts = new Meter();
   private Counter requests = new Counter();
+  private final Map<String, Counter> shardPurposes = new ConcurrentHashMap<>();
   private Timer requestTimes = new Timer();
+  private Timer distribRequestTimes = new Timer();
+  private Timer localRequestTimes = new Timer();
   private Counter totalTime = new Counter();
+  private Counter distribTotalTime = new Counter();
+  private Counter localTotalTime = new Counter();
 
   private final long handlerStart;
 
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   private PluginInfo pluginInfo;
+
+  protected SolrMetricsContext solrMetricsContext;
+
 
   @SuppressForbidden(reason = "Need currentTimeMillis, used only for stats output")
   public RequestHandlerBase() {
@@ -81,13 +90,14 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
 
   /**
    * Initializes the {@link org.apache.solr.request.SolrRequestHandler} by creating three {@link org.apache.solr.common.params.SolrParams} named.
-   * <table border="1" summary="table of parameters">
+   * <table style="border: 1px solid">
+   * <caption>table of parameters</caption>
    * <tr><th>Name</th><th>Description</th></tr>
    * <tr><td>defaults</td><td>Contains all of the named arguments contained within the list element named "defaults".</td></tr>
    * <tr><td>appends</td><td>Contains all of the named arguments contained within the list element named "appends".</td></tr>
    * <tr><td>invariants</td><td>Contains all of the named arguments contained within the list element named "invariants".</td></tr>
    * </table>
-   *
+   * <p>
    * Example:
    * <pre>
    * &lt;lst name="defaults"&gt;
@@ -108,27 +118,24 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
    * &lt;/lst&gt;
    * </pre>
    *
-   *
    * @param args The {@link org.apache.solr.common.util.NamedList} to initialize from
-   *
    * @see #handleRequest(org.apache.solr.request.SolrQueryRequest, org.apache.solr.response.SolrQueryResponse)
    * @see #handleRequestBody(org.apache.solr.request.SolrQueryRequest, org.apache.solr.response.SolrQueryResponse)
    * @see org.apache.solr.util.SolrPluginUtils#setDefaults(org.apache.solr.request.SolrQueryRequest, org.apache.solr.common.params.SolrParams, org.apache.solr.common.params.SolrParams, org.apache.solr.common.params.SolrParams)
-   * @see SolrParams#toSolrParams(org.apache.solr.common.util.NamedList)
-   *
+   * @see NamedList#toSolrParams()
+   * <p>
    * See also the example solrconfig.xml located in the Solr codebase (example/solr/conf).
    */
   @Override
   public void init(NamedList args) {
     initArgs = args;
 
-    // Copied from StandardRequestHandler
-    if( args != null ) {
+    if (args != null) {
       defaults = getSolrParamsFromNamedList(args, "defaults");
       appends = getSolrParamsFromNamedList(args, "appends");
       invariants = getSolrParamsFromNamedList(args, "invariants");
     }
-    
+
     if (initArgs != null) {
       Object caching = initArgs.get("httpCaching");
       httpCaching = caching != null ? Boolean.parseBoolean(caching.toString()) : true;
@@ -137,20 +144,34 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
   }
 
   @Override
-  public void initializeMetrics(SolrMetricManager manager, String registryName, String scope) {
-    numErrors = manager.meter(registryName, "errors", getCategory().toString(), scope);
-    numServerErrors = manager.meter(registryName, "serverErrors", getCategory().toString(), scope);
-    numClientErrors = manager.meter(registryName, "clientErrors", getCategory().toString(), scope);
-    numTimeouts = manager.meter(registryName, "timeouts", getCategory().toString(), scope);
-    requests = manager.counter(registryName, "requests", getCategory().toString(), scope);
-    requestTimes = manager.timer(registryName, "requestTimes", getCategory().toString(), scope);
-    totalTime = manager.counter(registryName, "totalTime", getCategory().toString(), scope);
+  public SolrMetricsContext getSolrMetricsContext() {
+    return solrMetricsContext;
+  }
+
+  @Override
+  public void initializeMetrics(SolrMetricsContext parentContext, String scope) {
+    this.solrMetricsContext = parentContext.getChildContext(this);
+    numErrors = solrMetricsContext.meter("errors", getCategory().toString(), scope);
+    numServerErrors = solrMetricsContext.meter("serverErrors", getCategory().toString(), scope);
+    numClientErrors = solrMetricsContext.meter("clientErrors", getCategory().toString(), scope);
+    numTimeouts = solrMetricsContext.meter("timeouts", getCategory().toString(), scope);
+    requests = solrMetricsContext.counter("requests", getCategory().toString(), scope);
+    MetricsMap metricsMap = new MetricsMap((detail, map) ->
+        shardPurposes.forEach((k, v) -> map.put(k, v.getCount())));
+    solrMetricsContext.gauge(metricsMap, true, "shardRequests", getCategory().toString(), scope);
+    requestTimes = solrMetricsContext.timer("requestTimes", getCategory().toString(), scope);
+    distribRequestTimes = solrMetricsContext.timer("requestTimes", getCategory().toString(), scope, "distrib");
+    localRequestTimes = solrMetricsContext.timer("requestTimes", getCategory().toString(), scope, "local");
+    totalTime = solrMetricsContext.counter("totalTime", getCategory().toString(), scope);
+    distribTotalTime = solrMetricsContext.counter("totalTime", getCategory().toString(), scope, "distrib");
+    localTotalTime = solrMetricsContext.counter("totalTime", getCategory().toString(), scope, "local");
+    solrMetricsContext.gauge(() -> handlerStart, true, "handlerStart", getCategory().toString(), scope);
   }
 
   public static SolrParams getSolrParamsFromNamedList(NamedList args, String key) {
     Object o = args.get(key);
     if (o != null && o instanceof NamedList) {
-      return  SolrParams.toSolrParams((NamedList) o);
+      return ((NamedList) o).toSolrParams();
     }
     return null;
   }
@@ -158,34 +179,60 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
   public NamedList getInitArgs() {
     return initArgs;
   }
-  
-  public abstract void handleRequestBody( SolrQueryRequest req, SolrQueryResponse rsp ) throws Exception;
+
+  public abstract void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws Exception;
 
   @Override
   public void handleRequest(SolrQueryRequest req, SolrQueryResponse rsp) {
     requests.inc();
+    // requests are distributed by default when ZK is in use, unless indicated otherwise
+    boolean distrib = req.getParams().getBool(CommonParams.DISTRIB,
+        req.getCore() != null ? req.getCore().getCoreContainer().isZooKeeperAware() : false);
+    if (req.getParams().getBool(ShardParams.IS_SHARD, false)) {
+      shardPurposes.computeIfAbsent("total", name -> new Counter()).inc();
+      int purpose = req.getParams().getInt(ShardParams.SHARDS_PURPOSE, 0);
+      if (purpose != 0) {
+        String[] names = SolrPluginUtils.getRequestPurposeNames(purpose);
+        for (String n : names) {
+          shardPurposes.computeIfAbsent(n, name -> new Counter()).inc();
+        }
+      }
+    }
     Timer.Context timer = requestTimes.time();
+    Timer.Context dTimer = distrib ? distribRequestTimes.time() : localRequestTimes.time();
     try {
-      if(pluginInfo != null && pluginInfo.attributes.containsKey(USEPARAM)) req.getContext().put(USEPARAM,pluginInfo.attributes.get(USEPARAM));
+      if (pluginInfo != null && pluginInfo.attributes.containsKey(USEPARAM))
+        req.getContext().put(USEPARAM, pluginInfo.attributes.get(USEPARAM));
       SolrPluginUtils.setDefaults(this, req, defaults, appends, invariants);
       req.getContext().remove(USEPARAM);
       rsp.setHttpCaching(httpCaching);
-      handleRequestBody( req, rsp );
+      handleRequestBody(req, rsp);
       // count timeouts
       NamedList header = rsp.getResponseHeader();
-      if(header != null) {
-        Object partialResults = header.get(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY);
-        boolean timedOut = partialResults == null ? false : (Boolean)partialResults;
-        if( timedOut ) {
+      if (header != null) {
+        if (Boolean.TRUE.equals(header.getBooleanArg(
+            SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY))) {
           numTimeouts.mark();
           rsp.setHttpCaching(false);
         }
       }
     } catch (Exception e) {
+      if (req.getCore() != null) {
+        boolean isTragic = req.getCore().getCoreContainer().checkTragicException(req.getCore());
+        if (isTragic) {
+          if (e instanceof SolrException) {
+            // Tragic exceptions should always throw a server error
+            assert ((SolrException) e).code() == 500;
+          } else {
+            // wrap it in a solr exception
+            e = new SolrException(SolrException.ErrorCode.SERVER_ERROR, e.getMessage(), e);
+          }
+        }
+      }
       boolean incrementErrors = true;
       boolean isServerError = true;
       if (e instanceof SolrException) {
-        SolrException se = (SolrException)e;
+        SolrException se = (SolrException) e;
         if (se.code() == SolrException.ErrorCode.CONFLICT.code) {
           incrementErrors = false;
         } else if (se.code() >= 400 && se.code() < 500) {
@@ -211,8 +258,14 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
         }
       }
     } finally {
+      dTimer.stop();
       long elapsed = timer.stop();
       totalTime.inc(elapsed);
+      if (distrib) {
+        distribTotalTime.inc(elapsed);
+      } else {
+        localTotalTime.inc(elapsed);
+      }
     }
   }
 
@@ -225,24 +278,11 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
 
   @Override
   public abstract String getDescription();
-  @Override
-  public String getSource() { return null; }
-  
-  @Override
-  public String getVersion() {
-    return getClass().getPackage().getSpecificationVersion();
-  }
-  
+
   @Override
   public Category getCategory() {
     return Category.QUERY;
   }
-
-  @Override
-  public URL[] getDocs() {
-    return null;  // this can be overridden, but not required
-  }
-
 
   @Override
   public SolrRequestHandler getSubHandler(String subPath) {
@@ -252,16 +292,16 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
 
   /**
    * Get the request handler registered to a given name.
-   *
+   * <p>
    * This function is thread safe.
    */
   public static SolrRequestHandler getRequestHandler(String handlerName, PluginBag<SolrRequestHandler> reqHandlers) {
-    if(handlerName == null) return null;
+    if (handlerName == null) return null;
     SolrRequestHandler handler = reqHandlers.get(handlerName);
     int idx = 0;
-    if(handler == null) {
+    if (handler == null) {
       for (; ; ) {
-        idx = handlerName.indexOf('/', idx+1);
+        idx = handlerName.indexOf('/', idx + 1);
         if (idx > 0) {
           String firstPart = handlerName.substring(0, idx);
           handler = reqHandlers.get(firstPart);
@@ -277,28 +317,12 @@ public abstract class RequestHandlerBase implements SolrRequestHandler, SolrInfo
     return handler;
   }
 
-  public void setPluginInfo(PluginInfo pluginInfo){
-    if(this.pluginInfo==null) this.pluginInfo = pluginInfo;
+  public void setPluginInfo(PluginInfo pluginInfo) {
+    if (this.pluginInfo == null) this.pluginInfo = pluginInfo;
   }
 
-  public PluginInfo getPluginInfo(){
-    return  pluginInfo;
-  }
-
-
-  @Override
-  public NamedList<Object> getStatistics() {
-    NamedList<Object> lst = new SimpleOrderedMap<>();
-    lst.add("handlerStart",handlerStart);
-    lst.add("requests", requests.getCount());
-    lst.add("errors", numErrors.getCount());
-    lst.add("serverErrors", numServerErrors.getCount());
-    lst.add("clientErrors", numClientErrors.getCount());
-    lst.add("timeouts", numTimeouts.getCount());
-    // convert totalTime to ms
-    lst.add("totalTime", MetricUtils.nsToMs(totalTime.getCount()));
-    MetricUtils.addMetrics(lst, requestTimes);
-    return lst;
+  public PluginInfo getPluginInfo() {
+    return pluginInfo;
   }
 
   @Override

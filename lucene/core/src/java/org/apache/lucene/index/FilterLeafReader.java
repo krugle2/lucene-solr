@@ -20,7 +20,6 @@ package org.apache.lucene.index;
 import java.io.IOException;
 import java.util.Iterator;
 
-import org.apache.lucene.search.Sort;
 import org.apache.lucene.util.AttributeSource;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
@@ -45,7 +44,7 @@ public abstract class FilterLeafReader extends LeafReader {
    *  an instance of {@link FilterLeafReader}.  */
   public static LeafReader unwrap(LeafReader reader) {
     while (reader instanceof FilterLeafReader) {
-      reader = ((FilterLeafReader) reader).in;
+      reader = ((FilterLeafReader) reader).getDelegate();
     }
     return reader;
   }
@@ -179,6 +178,11 @@ public abstract class FilterLeafReader extends LeafReader {
     public SeekStatus seekCeil(BytesRef text) throws IOException {
       return in.seekCeil(text);
     }
+    
+    @Override
+    public boolean seekExact(BytesRef text) throws IOException {
+      return in.seekExact(text);
+    }
 
     @Override
     public void seekExact(long ord) throws IOException {
@@ -215,6 +219,20 @@ public abstract class FilterLeafReader extends LeafReader {
       return in.postings(reuse, flags);
     }
 
+    @Override
+    public ImpactsEnum impacts(int flags) throws IOException {
+      return in.impacts(flags);
+    }
+
+    @Override
+    public void seekExact(BytesRef term, TermState state) throws IOException {
+      in.seekExact(term, state);
+    }
+
+    @Override
+    public TermState termState() throws IOException {
+      return in.termState();
+    }
   }
 
   /** Base class for filtering {@link PostingsEnum} implementations. */
@@ -231,11 +249,6 @@ public abstract class FilterLeafReader extends LeafReader {
         throw new NullPointerException("incoming PostingsEnum must not be null");
       }
       this.in = in;
-    }
-
-    @Override
-    public AttributeSource attributes() {
-      return in.attributes();
     }
 
     @Override
@@ -346,11 +359,11 @@ public abstract class FilterLeafReader extends LeafReader {
   protected void doClose() throws IOException {
     in.close();
   }
-  
+
   @Override
-  public Fields fields() throws IOException {
+  public Terms terms(String field) throws IOException {
     ensureOpen();
-    return in.fields();
+    return in.terms(field);
   }
 
   @Override
@@ -398,9 +411,9 @@ public abstract class FilterLeafReader extends LeafReader {
   }
 
   @Override
-  public Sort getIndexSort() {
+  public LeafMetaData getMetaData() {
     ensureOpen();
-    return in.getIndexSort();
+    return in.getMetaData();
   }
 
   @Override

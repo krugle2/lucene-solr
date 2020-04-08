@@ -19,12 +19,15 @@ package org.apache.solr.client.solrj.io.stream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.solr.client.solrj.io.Tuple;
 import org.apache.solr.client.solrj.io.comp.StreamComparator;
+import org.apache.solr.client.solrj.io.eval.EvaluatorException;
 import org.apache.solr.client.solrj.io.eval.StreamEvaluator;
 import org.apache.solr.client.solrj.io.ops.StreamOperation;
 import org.apache.solr.client.solrj.io.stream.expr.Explanation;
@@ -40,6 +43,7 @@ import org.apache.solr.client.solrj.io.stream.expr.StreamFactory;
 /**
 * Selects fields from the incoming stream and applies optional field renaming.
 * Does not reorder the outgoing stream.
+* @since 6.0.0
 **/
 
 
@@ -48,6 +52,7 @@ public class SelectStream extends TupleStream implements Expressible {
   private static final long serialVersionUID = 1;
 
   private TupleStream stream;
+  private StreamContext streamContext;
   private Map<String,String> selectedFields;
   private Map<StreamEvaluator,String> selectedEvaluators;
   private List<StreamOperation> operations;
@@ -59,14 +64,14 @@ public class SelectStream extends TupleStream implements Expressible {
       this.selectedFields.put(selectedField, selectedField);
     }
     operations = new ArrayList<>();
-    selectedEvaluators = new HashMap<>();
+    selectedEvaluators = new LinkedHashMap();
   }
   
   public SelectStream(TupleStream stream, Map<String,String> selectedFields) throws IOException {
     this.stream = stream;
     this.selectedFields = selectedFields;
     operations = new ArrayList<>();
-    selectedEvaluators = new HashMap<>();
+    selectedEvaluators = new LinkedHashMap();
   }
   
   public SelectStream(StreamExpression expression,StreamFactory factory) throws IOException {
@@ -96,7 +101,7 @@ public class SelectStream extends TupleStream implements Expressible {
     stream = factory.constructStream(streamExpressions.get(0));
     
     selectedFields = new HashMap<String,String>();
-    selectedEvaluators = new HashMap<StreamEvaluator, String>();
+    selectedEvaluators = new LinkedHashMap();
     for(StreamExpressionParameter parameter : selectAsFieldsExpressions){
       StreamExpressionValue selectField = (StreamExpressionValue)parameter;
       String value = selectField.getValue().trim();
@@ -123,8 +128,17 @@ public class SelectStream extends TupleStream implements Expressible {
               selectedEvaluators.put(factory.constructEvaluator(asValueExpression), asName);
               handled = true;
             }
-          }
-          catch(Throwable e){
+          } catch(Throwable e) {
+            Throwable t = e;
+            while(true) {
+              if(t instanceof EvaluatorException) {
+                throw new IOException(t);
+              }
+              t = t.getCause();
+              if(t == null) {
+                break;
+              }
+            }
             // it was not handled, so treat as a non-evaluator
           }
         }
@@ -212,7 +226,13 @@ public class SelectStream extends TupleStream implements Expressible {
   }
 
   public void setStreamContext(StreamContext context) {
+    this.streamContext = context;
     this.stream.setStreamContext(context);
+    Set<StreamEvaluator> evaluators = selectedEvaluators.keySet();
+
+    for(StreamEvaluator evaluator : evaluators) {
+      evaluator.setStreamContext(context);
+    }
   }
 
   public List<TupleStream> children() {
@@ -239,6 +259,14 @@ public class SelectStream extends TupleStream implements Expressible {
     // create a copy with the limited set of fields
     Tuple workingToReturn = new Tuple(new HashMap<>());
     Tuple workingForEvaluators = new Tuple(new HashMap<>());
+
+    //Clear the TupleContext before running the evaluators.
+    //The TupleContext allows evaluators to cache values within the scope of a single tuple.
+    //For example a LocalDateTime could be parsed by one evaluator and used by other evaluators within the scope of the tuple.
+    //This avoids the need to create multiple LocalDateTime instances for the same tuple to satisfy a select expression.
+
+    streamContext.getTupleContext().clear();
+
     for(Object fieldName : original.fields.keySet()){
       workingForEvaluators.put(fieldName, original.get(fieldName));
       if(selectedFields.containsKey(fieldName)){
@@ -254,7 +282,11 @@ public class SelectStream extends TupleStream implements Expressible {
     
     // Apply all evaluators
     for(Map.Entry<StreamEvaluator, String> selectedEvaluator : selectedEvaluators.entrySet()) {
-      workingToReturn.put(selectedEvaluator.getValue(), selectedEvaluator.getKey().evaluate(workingForEvaluators));
+      Object o = selectedEvaluator.getKey().evaluate(workingForEvaluators);
+      if(o != null) {
+        workingForEvaluators.put(selectedEvaluator.getValue(), o);
+        workingToReturn.put(selectedEvaluator.getValue(), o);
+      }
     }
     
     return workingToReturn;

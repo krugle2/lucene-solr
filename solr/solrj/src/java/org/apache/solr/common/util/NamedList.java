@@ -16,19 +16,25 @@
  */
 package org.apache.solr.common.util;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
 
+import org.apache.solr.common.MapWriter;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.params.MultiMapSolrParams;
+import org.apache.solr.common.params.SolrParams;
 
 /**
  * A simple container class for modeling an ordered list of name/value pairs.
@@ -56,7 +62,7 @@ import org.apache.solr.common.SolrException;
  * </p>
  *
  */
-public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry<String,T>> {
+public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry<String,T>> , MapWriter {
 
   private static final long serialVersionUID = 1957981902839867821L;
   protected final List<Object> nvPairs;
@@ -71,6 +77,12 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
     nvPairs = new ArrayList<>(sz<<1);
   }
 
+  @Override
+  public void writeMap(EntryWriter ew) throws IOException {
+    for (int i = 0; i < nvPairs.size(); i+=2) {
+      ew.put((CharSequence) nvPairs.get(i), nvPairs.get(i + 1));
+    }
+  }
 
   /**
    * Creates a NamedList instance containing the "name,value" pairs contained in the
@@ -106,7 +118,7 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
     if (null == nameValueMap) {
       nvPairs = new ArrayList<>();
     } else {
-      nvPairs = new ArrayList<>(nameValueMap.size());
+      nvPairs = new ArrayList<>(nameValueMap.size() << 1);
       for (Map.Entry<String,? extends T> ent : nameValueMap.entrySet()) {
         nvPairs.add(ent.getKey());
         nvPairs.add(ent.getValue());
@@ -122,12 +134,17 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
    * When using this constructor, runtime type safety is only guaranteed if
    * all even numbered elements of the input list are of type "T".
    * </p>
-   *
-   * @param nameValuePairs underlying List which should be used to implement a NamedList
-   * @deprecated Use {@link #NamedList(java.util.Map.Entry[])} for the NamedList instantiation
+   * <p>
+   * This method is package protected and exists solely so SimpleOrderedMap and clone() can utilize it
+   * </p>
+   * <p>
+   * TODO: this method was formerly public, now that it's not we can change the impl details of 
+   * this class to be based on a Map.Entry[] 
+   * </p>
+   * @lucene.internal
+   * @see #nameValueMapToList
    */
-  @Deprecated
-  public NamedList(List<Object> nameValuePairs) {
+  NamedList(List<Object> nameValuePairs) {
     nvPairs=nameValuePairs;
   }
 
@@ -136,14 +153,16 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
    * indexed elements (0,2,4. ..etc) are Strings and odd elements (1,3,5,) are of
    * the type "T".
    *
-   * @return Modified List as per the above description
-   * @deprecated This a temporary placeholder method until the guts of the class
+   * <p>
+   * NOTE: This a temporary placeholder method until the guts of the class
    * are actually replaced by List&lt;String, ?&gt;.
+   * </p>
+   *
+   * @return Modified List as per the above description
    * @see <a href="https://issues.apache.org/jira/browse/SOLR-912">SOLR-912</a>
    */
-  @Deprecated
   private List<Object> nameValueMapToList(Map.Entry<String, ? extends T>[] nameValuePairs) {
-    List<Object> result = new ArrayList<>();
+    List<Object> result = new ArrayList<>(nameValuePairs.length << 1);
     for (Map.Entry<String, ?> ent : nameValuePairs) {
       result.add(ent.getKey());
       result.add(ent.getValue());
@@ -289,7 +308,7 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
     int sz = size();
     for (int i = 0; i < sz; i++) {
       String n = getName(i);
-      if (name==n || (name!=null && name.equals(n))) {
+      if (Objects.equals(name, n)) {
         result.add(getVal(i));
       }
     }
@@ -306,7 +325,7 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
     // Go through the list backwards, removing matches as found.
     for (int i = sz - 1; i >= 0; i--) {
       String n = getName(i);
-      if (name==n || (name!=null && name.equals(n))) {
+      if (Objects.equals(name, n)) {
         remove(i);
       }
     }
@@ -383,7 +402,7 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
     sb.append('{');
     int sz = size();
     for (int i=0; i<sz; i++) {
-      if (i != 0) sb.append(',');
+      if (i != 0) sb.append(", ");
       sb.append(getName(i));
       sb.append('=');
       sb.append(getVal(i));
@@ -399,6 +418,9 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
   }
 
   public Map<String,T> asShallowMap() {
+    return asShallowMap(false);
+  }
+  public Map<String,T> asShallowMap(boolean allowDps) {
     return new Map<String, T>() {
       @Override
       public int size() {
@@ -426,13 +448,17 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
 
       @Override
       public T put(String  key, T value) {
+        if (allowDps) {
+          NamedList.this.add(key, value);
+          return null;
+        }
         int idx = NamedList.this.indexOf(key, 0);
         if (idx == -1) {
           NamedList.this.add(key, value);
         } else {
           NamedList.this.setVal(idx, value);
         }
-        return  null;
+        return null;
       }
 
       @Override
@@ -506,6 +532,33 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
       }
     }
     return result;
+  }
+  /**
+   * Create SolrParams from NamedList.  Values must be {@code String[]} or {@code List}
+   * (with toString()-appropriate entries), or otherwise have a toString()-appropriate value.
+   * Nulls are retained as such in arrays/lists but otherwise will NPE.
+   */
+  public SolrParams toSolrParams() {
+    HashMap<String,String[]> map = new HashMap<>();
+    for (int i=0; i<this.size(); i++) {
+      String name = this.getName(i);
+      Object val = this.getVal(i);
+      if (val instanceof String[]) {
+        MultiMapSolrParams.addParam(name, (String[]) val, map);
+      } else if (val instanceof List) {
+        List l = (List) val;
+        String[] s = new String[l.size()];
+        for (int j = 0; j < l.size(); j++) {
+          s[j] = l.get(j) == null ? null : l.get(j).toString();
+        }
+        MultiMapSolrParams.addParam(name, s, map);
+      } else {
+        //TODO: we NPE if val is null; yet we support val members above. A bug?
+        MultiMapSolrParams.addParam(name, val.toString(), map);
+      }
+    }
+    // always use MultiMap for easier processing further down the chain
+    return new MultiMapSolrParams(map);
   }
 
   /**
@@ -650,8 +703,7 @@ public class NamedList<T> implements Cloneable, Serializable, Iterable<Map.Entry
    * @return List of values
    */
   public List<T> removeAll(String name) {
-    List<T> result = new ArrayList<>();
-    result = getAll(name);
+    List<T> result = getAll(name);
     if (result.size() > 0 ) {
       killAll(name);
       return result;

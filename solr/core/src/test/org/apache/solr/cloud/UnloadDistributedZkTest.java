@@ -18,28 +18,30 @@ package org.apache.solr.cloud;
 
 import org.apache.lucene.util.LuceneTestCase.Slow;
 import org.apache.solr.SolrTestCaseJ4.SuppressSSL;
-import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.client.solrj.embedded.JettySolrRunner;
 import org.apache.solr.client.solrj.impl.HttpSolrClient;
-import org.apache.solr.client.solrj.request.CoreAdminRequest.Create;
+import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.client.solrj.request.CoreAdminRequest.Unload;
 import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.cloud.ZkCoreNodeProps;
 import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.params.ModifiableSolrParams;
-import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.ExecutorUtil;
-import org.apache.solr.update.DirectUpdateHandler2;
+import org.apache.solr.common.util.TimeSource;
+import org.apache.solr.core.SolrCore;
 import org.apache.solr.util.DefaultSolrThreadFactory;
+import org.apache.solr.util.TestInjection;
 import org.apache.solr.util.TimeOut;
 import org.junit.Test;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Random;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -52,30 +54,29 @@ import java.util.concurrent.TimeUnit;
 @Slow
 @SuppressSSL(bugUrl = "https://issues.apache.org/jira/browse/SOLR-5776")
 public class UnloadDistributedZkTest extends BasicDistributedZkTest {
-
-  protected String getSolrXml() {
-    return "solr.xml";
-  }
-  
   public UnloadDistributedZkTest() {
     super();
   }
 
+  protected String getSolrXml() {
+    return "solr.xml";
+  }
+
   @Test
   public void test() throws Exception {
-    
     testCoreUnloadAndLeaders(); // long
     testUnloadLotsOfCores(); // long
-    
+
     testUnloadShardAndCollection();
   }
 
   private void checkCoreNamePresenceAndSliceCount(String collectionName, String coreName,
       boolean shouldBePresent, int expectedSliceCount) throws Exception {
-    final TimeOut timeout = new TimeOut(45, TimeUnit.SECONDS);
+    final TimeOut timeout = new TimeOut(45, TimeUnit.SECONDS, TimeSource.NANO_TIME);
     Boolean isPresent = null; // null meaning "don't know"
-    while (null == isPresent || shouldBePresent != isPresent.booleanValue()) {
-      final Collection<Slice> slices = getCommonCloudSolrClient().getZkStateReader().getClusterState().getSlices(collectionName);
+    while (null == isPresent || shouldBePresent != isPresent) {
+      final DocCollection docCollection = getCommonCloudSolrClient().getZkStateReader().getClusterState().getCollectionOrNull(collectionName);
+      final Collection<Slice> slices = (docCollection != null) ? docCollection.getSlices() : Collections.emptyList();
       if (timeout.hasTimedOut()) {
         printLayout();
         fail("checkCoreNamePresenceAndSliceCount failed:"
@@ -83,14 +84,12 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
             +" shouldBePresent="+shouldBePresent+" isPresent="+isPresent
             +" expectedSliceCount="+expectedSliceCount+" actualSliceCount="+slices.size());
       }
-      if (expectedSliceCount == (slices == null ? 0 : slices.size())) {
+      if (expectedSliceCount == slices.size()) {
         isPresent = false;
-        if (slices != null) {
-          for (Slice slice : slices) {
-            for (Replica replica : slice.getReplicas()) {
-              if (coreName.equals(replica.get("core"))) {
-                isPresent = true;
-              }
+        for (Slice slice : slices) {
+          for (Replica replica : slice.getReplicas()) {
+            if (coreName.equals(replica.get("core"))) {
+              isPresent = true;
             }
           }
         }
@@ -100,7 +99,6 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
   }
 
   private void testUnloadShardAndCollection() throws Exception{
-
     final int numShards = 2;
 
     final String collection = "test_unload_shard_and_collection";
@@ -108,37 +106,28 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
     final String coreName1 = collection+"_1";
     final String coreName2 = collection+"_2";
 
-    // create one leader and one replica
-    Create createCmd = new Create();
-    createCmd.setCoreName(coreName1);
-    createCmd.setCollection(collection);
-    String coreDataDir = createTempDir().toFile().getAbsolutePath();
-    createCmd.setDataDir(getDataDir(coreDataDir));
-    createCmd.setNumShards(numShards);
-    
-    SolrClient client = clients.get(0);
-    String url1 = getBaseUrl(client);
+    assertEquals(0, CollectionAdminRequest.createCollection(collection, "conf1", numShards, 1)
+        .setCreateNodeSet("")
+        .process(cloudClient).getStatus());
+    assertTrue(CollectionAdminRequest.addReplicaToShard(collection, "shard1")
+        .setCoreName(coreName1)
+        .setNode(jettys.get(0).getNodeName())
+        .process(cloudClient).isSuccess());
 
-    try (HttpSolrClient adminClient = getHttpSolrClient(url1)) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(60000);
-      adminClient.request(createCmd);
+    assertTrue(CollectionAdminRequest.addReplicaToShard(collection, "shard2")
+        .setCoreName(coreName2)
+        .setNode(jettys.get(0).getNodeName())
+        .process(cloudClient).isSuccess());
 
-      createCmd = new Create();
-      createCmd.setCoreName(coreName2);
-      createCmd.setCollection(collection);
-      coreDataDir = createTempDir().toFile().getAbsolutePath();
-      createCmd.setDataDir(getDataDir(coreDataDir));
 
-      adminClient.request(createCmd);
+    // does not mean they are active and up yet :*
+    waitForRecoveriesToFinish(collection, false);
 
-      // does not mean they are active and up yet :*
-      waitForRecoveriesToFinish(collection, false);
+    final boolean unloadInOrder = random().nextBoolean();
+    final String unloadCmdCoreName1 = (unloadInOrder ? coreName1 : coreName2);
+    final String unloadCmdCoreName2 = (unloadInOrder ? coreName2 : coreName1);
 
-      final boolean unloadInOrder = random().nextBoolean();
-      final String unloadCmdCoreName1 = (unloadInOrder ? coreName1 : coreName2);
-      final String unloadCmdCoreName2 = (unloadInOrder ? coreName2 : coreName1);
-
+    try (HttpSolrClient adminClient = getHttpSolrClient(buildUrl(jettys.get(0).getLocalPort()))) {
       // now unload one of the two
       Unload unloadCmd = new Unload(false);
       unloadCmd.setCoreName(unloadCmdCoreName1);
@@ -159,46 +148,40 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
     assertTrue("No longer found collection "+collection, getCommonCloudSolrClient().getZkStateReader().getClusterState().hasCollection(collection));
   }
 
+  protected SolrCore getFirstCore(String collection, JettySolrRunner jetty) {
+    SolrCore solrCore = null;
+    for (SolrCore core : jetty.getCoreContainer().getCores()) {
+      if (core.getName().startsWith(collection)) {
+        solrCore = core;
+      }
+    }
+    return solrCore;
+  }
+
   /**
    * @throws Exception on any problem
    */
   private void testCoreUnloadAndLeaders() throws Exception {
-    File tmpDir = createTempDir().toFile();
+    JettySolrRunner jetty1 = jettys.get(0);
 
-    String core1DataDir = tmpDir.getAbsolutePath() + File.separator + System.nanoTime() + "unloadcollection1" + "_1n";
-
-    // create a new collection collection
-    SolrClient client = clients.get(0);
-    String url1 = getBaseUrl(client);
-    try (HttpSolrClient adminClient = getHttpSolrClient(url1)) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(60000);
-
-      Create createCmd = new Create();
-      createCmd.setCoreName("unloadcollection1");
-      createCmd.setCollection("unloadcollection");
-      createCmd.setNumShards(1);
-      createCmd.setDataDir(getDataDir(core1DataDir));
-      adminClient.request(createCmd);
-    }
+    assertEquals(0, CollectionAdminRequest
+        .createCollection("unloadcollection", "conf1", 1,1)
+        .setCreateNodeSet(jetty1.getNodeName())
+        .process(cloudClient).getStatus());
     ZkStateReader zkStateReader = getCommonCloudSolrClient().getZkStateReader();
     
     zkStateReader.forceUpdateCollection("unloadcollection");
 
     int slices = zkStateReader.getClusterState().getCollection("unloadcollection").getSlices().size();
     assertEquals(1, slices);
-    
-    client = clients.get(1);
-    String url2 = getBaseUrl(client);
-    try (HttpSolrClient adminClient = getHttpSolrClient(url2)) {
+    SolrCore solrCore = getFirstCore("unloadcollection", jetty1);
+    String core1DataDir = solrCore.getDataDir();
 
-      Create createCmd = new Create();
-      createCmd.setCoreName("unloadcollection2");
-      createCmd.setCollection("unloadcollection");
-      String core2dataDir = tmpDir.getAbsolutePath() + File.separator + System.nanoTime() + "unloadcollection1" + "_2n";
-      createCmd.setDataDir(getDataDir(core2dataDir));
-      adminClient.request(createCmd);
-    }
+    assertTrue(CollectionAdminRequest
+        .addReplicaToShard("unloadcollection", "shard1")
+        .setCoreName("unloadcollection_shard1_replica2")
+        .setNode(jettys.get(1).getNodeName())
+        .process(cloudClient).isSuccess());
     zkStateReader.forceUpdateCollection("unloadcollection");
     slices = zkStateReader.getClusterState().getCollection("unloadcollection").getSlices().size();
     assertEquals(1, slices);
@@ -225,25 +208,18 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
       }
     }
 
-    // create another replica for our collection
-    client = clients.get(2);
-    String url3 = getBaseUrl(client);
-    try (HttpSolrClient adminClient = getHttpSolrClient(url3)) {
-      Create createCmd = new Create();
-      createCmd.setCoreName("unloadcollection3");
-      createCmd.setCollection("unloadcollection");
-      String core3dataDir = tmpDir.getAbsolutePath() + File.separator + System.nanoTime() + "unloadcollection" + "_3n";
-      createCmd.setDataDir(getDataDir(core3dataDir));
-      adminClient.request(createCmd);
-    }
-    
+    assertTrue(CollectionAdminRequest
+        .addReplicaToShard("unloadcollection", "shard1")
+        .setCoreName("unloadcollection_shard1_replica3")
+        .setNode(jettys.get(2).getNodeName())
+        .process(cloudClient).isSuccess());
+
     waitForRecoveriesToFinish("unloadcollection", zkStateReader, false);
-    
+
     // so that we start with some versions when we reload...
-    DirectUpdateHandler2.commitOnClose = false;
-    
-    try (HttpSolrClient addClient = getHttpSolrClient(url3 + "/unloadcollection3")) {
-      addClient.setConnectionTimeout(30000);
+    TestInjection.skipIndexWriterCommitOnClose = true;
+
+    try (HttpSolrClient addClient = getHttpSolrClient(jettys.get(2).getBaseUrl() + "/unloadcollection_shard1_replica3", 30000)) {
 
       // add a few docs
       for (int x = 20; x < 100; x++) {
@@ -256,9 +232,7 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
     //collectionClient.commit();
     
     // unload the leader
-    try (HttpSolrClient collectionClient = getHttpSolrClient(leaderProps.getBaseUrl())) {
-      collectionClient.setConnectionTimeout(15000);
-      collectionClient.setSoTimeout(30000);
+    try (HttpSolrClient collectionClient = getHttpSolrClient(leaderProps.getBaseUrl(), 15000, 30000)) {
 
       Unload unloadCmd = new Unload(false);
       unloadCmd.setCoreName(leaderProps.getCoreName());
@@ -276,13 +250,11 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
         fail("Leader never changed");
       }
     }
-    
+
     // ensure there is a leader
     zkStateReader.getLeaderRetry("unloadcollection", "shard1", 15000);
-    
-    try (HttpSolrClient addClient = getHttpSolrClient(url2 + "/unloadcollection2")) {
-      addClient.setConnectionTimeout(30000);
-      addClient.setSoTimeout(90000);
+
+    try (HttpSolrClient addClient = getHttpSolrClient(jettys.get(1).getBaseUrl() + "/unloadcollection_shard1_replica2", 30000, 90000)) {
 
       // add a few docs while the leader is down
       for (int x = 101; x < 200; x++) {
@@ -291,32 +263,21 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
         addClient.add(doc1);
       }
     }
-    
-    // create another replica for our collection
-    client = clients.get(3);
-    String url4 = getBaseUrl(client);
-    try (HttpSolrClient adminClient = getHttpSolrClient(url4)) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(30000);
 
-      Create createCmd = new Create();
-      createCmd.setCoreName("unloadcollection4");
-      createCmd.setCollection("unloadcollection");
-      String core4dataDir = tmpDir.getAbsolutePath() + File.separator + System.nanoTime() + "unloadcollection" + "_4n";
-      createCmd.setDataDir(getDataDir(core4dataDir));
-      adminClient.request(createCmd);
-    }
+    assertTrue(CollectionAdminRequest
+        .addReplicaToShard("unloadcollection", "shard1")
+        .setCoreName("unloadcollection_shard1_replica4")
+        .setNode(jettys.get(3).getNodeName())
+        .process(cloudClient).isSuccess());
+
     waitForRecoveriesToFinish("unloadcollection", zkStateReader, false);
-    
+
     // unload the leader again
     leaderProps = getLeaderUrlFromZk("unloadcollection", "shard1");
-    try (HttpSolrClient collectionClient = getHttpSolrClient(leaderProps.getBaseUrl())) {
-      collectionClient.setConnectionTimeout(15000);
-      collectionClient.setSoTimeout(30000);
+    try (HttpSolrClient collectionClient = getHttpSolrClient(leaderProps.getBaseUrl(), 15000, 30000)) {
 
       Unload unloadCmd = new Unload(false);
       unloadCmd.setCoreName(leaderProps.getCoreName());
-      SolrParams p = (ModifiableSolrParams) unloadCmd.getParams();
       collectionClient.request(unloadCmd);
     }
     tries = 50;
@@ -326,48 +287,36 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
         fail("Leader never changed");
       }
     }
-    
-    zkStateReader.getLeaderRetry("unloadcollection", "shard1", 15000);
-    
-    
-    // set this back
-    DirectUpdateHandler2.commitOnClose = true;
-    
-    // bring the downed leader back as replica
-    try (HttpSolrClient adminClient = getHttpSolrClient(leaderProps.getBaseUrl())) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(30000);
 
-      Create createCmd = new Create();
-      createCmd.setCoreName(leaderProps.getCoreName());
-      createCmd.setCollection("unloadcollection");
-      createCmd.setDataDir(getDataDir(core1DataDir));
-      adminClient.request(createCmd);
-    }
+    zkStateReader.getLeaderRetry("unloadcollection", "shard1", 15000);
+
+    TestInjection.skipIndexWriterCommitOnClose = false; // set this back
+    assertTrue(CollectionAdminRequest
+        .addReplicaToShard("unloadcollection", "shard1")
+        .setCoreName(leaderProps.getCoreName())
+        .setDataDir(core1DataDir)
+        .setNode(leaderProps.getNodeName())
+        .process(cloudClient).isSuccess());
+
     waitForRecoveriesToFinish("unloadcollection", zkStateReader, false);
 
     long found1, found3;
-    
-    try (HttpSolrClient adminClient = getHttpSolrClient(url2 + "/unloadcollection")) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(30000);
+
+    try (HttpSolrClient adminClient = getHttpSolrClient(jettys.get(1).getBaseUrl() + "/unloadcollection_shard1_replica2", 15000, 30000)) {
       adminClient.commit();
       SolrQuery q = new SolrQuery("*:*");
       q.set("distrib", false);
       found1 = adminClient.query(q).getResults().getNumFound();
     }
-    try (HttpSolrClient adminClient = getHttpSolrClient(url3 + "/unloadcollection")) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(30000);
+
+    try (HttpSolrClient adminClient = getHttpSolrClient(jettys.get(2).getBaseUrl() + "/unloadcollection_shard1_replica3", 15000, 30000)) {
       adminClient.commit();
       SolrQuery q = new SolrQuery("*:*");
       q.set("distrib", false);
       found3 = adminClient.query(q).getResults().getNumFound();
     }
 
-    try (HttpSolrClient adminClient = getHttpSolrClient(url4 + "/unloadcollection")) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(30000);
+    try (HttpSolrClient adminClient = getHttpSolrClient(jettys.get(3).getBaseUrl() + "/unloadcollection_shard1_replica4", 15000, 30000)) {
       adminClient.commit();
       SolrQuery q = new SolrQuery("*:*");
       q.set("distrib", false);
@@ -377,31 +326,27 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
       assertEquals(found1, found3);
       assertEquals(found3, found4);
     }
-    
   }
   
   private void testUnloadLotsOfCores() throws Exception {
-    SolrClient client = clients.get(2);
-    String url3 = getBaseUrl(client);
-    try (final HttpSolrClient adminClient = getHttpSolrClient(url3)) {
-      adminClient.setConnectionTimeout(15000);
-      adminClient.setSoTimeout(60000);
-      int cnt = atLeast(3);
+    JettySolrRunner jetty = jettys.get(0);
+    try (final HttpSolrClient adminClient = (HttpSolrClient) jetty.newClient(15000, 60000)) {
+      int numReplicas = atLeast(3);
       ThreadPoolExecutor executor = new ExecutorUtil.MDCAwareThreadPoolExecutor(0, Integer.MAX_VALUE,
-          5, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(),
+          5, TimeUnit.SECONDS, new SynchronousQueue<>(),
           new DefaultSolrThreadFactory("testExecutor"));
       try {
         // create the cores
-        createCores(adminClient, executor, "multiunload", 2, cnt);
+        createCollectionInOneInstance(adminClient, jetty.getNodeName(), executor, "multiunload", 2, numReplicas);
       } finally {
         ExecutorUtil.shutdownAndAwaitTermination(executor);
       }
 
       executor = new ExecutorUtil.MDCAwareThreadPoolExecutor(0, Integer.MAX_VALUE, 5,
-          TimeUnit.SECONDS, new SynchronousQueue<Runnable>(),
+          TimeUnit.SECONDS, new SynchronousQueue<>(),
           new DefaultSolrThreadFactory("testExecutor"));
       try {
-        for (int j = 0; j < cnt; j++) {
+        for (int j = 0; j < numReplicas; j++) {
           final int freezeJ = j;
           executor.execute(() -> {
             Unload unloadCmd = new Unload(true);
@@ -419,5 +364,4 @@ public class UnloadDistributedZkTest extends BasicDistributedZkTest {
       }
     }
   }
-
 }

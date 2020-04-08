@@ -22,9 +22,9 @@ import java.util.function.Predicate;
 
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.MultiDocValues;
 import org.apache.lucene.index.MultiDocValues.MultiSortedSetDocValues;
-import org.apache.lucene.index.MultiDocValues.OrdinalMap;
+import org.apache.lucene.index.MultiDocValues;
+import org.apache.lucene.index.OrdinalMap;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.DocIdSet;
@@ -167,6 +167,10 @@ public class DocValuesFacets {
 
       // IDEA: we could also maintain a count of "other"... everything that fell outside
       // of the top 'N'
+
+      if (limit == 0) {
+        return finalize(res, searcher, schemaField, docs, missingCount, missing);
+      }
 
       int off=offset;
       int lim=limit>=0 ? limit : Integer.MAX_VALUE;

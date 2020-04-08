@@ -24,13 +24,13 @@
   <luceneMatchVersion>${tests.luceneMatchVersion:LATEST}</luceneMatchVersion>
 
   <indexConfig>
-    <mergePolicyFactory class="org.apache.solr.update.DummyMergePolicyFactory">
+    <mergePolicyFactory class="org.apache.solr.index.DummyMergePolicyFactory">
       <int name="mergeFactor">8</int>
     </mergePolicyFactory>
   </indexConfig>
 
   <updateHandler class="solr.DirectUpdateHandler2"/>
-  <requestHandler name="standard" class="solr.StandardRequestHandler"></requestHandler>
+  <requestHandler name="/select" class="solr.SearchHandler"></requestHandler>
 
   <schemaFactory class="ClassicIndexSchemaFactory"/>
 

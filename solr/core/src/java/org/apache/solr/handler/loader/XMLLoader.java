@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 package org.apache.solr.handler.loader;
+
 import javax.xml.parsers.SAXParserFactory;
 import javax.xml.stream.FactoryConfigurationError;
 import javax.xml.stream.XMLInputFactory;
@@ -39,11 +40,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.google.common.collect.Lists;
 import org.apache.commons.io.IOUtils;
-import org.apache.solr.client.solrj.request.UpdateRequest;
+import org.apache.solr.common.EmptyEntityResolver;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
+import org.apache.solr.common.params.ShardParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.params.UpdateParams;
 import org.apache.solr.common.util.ContentStream;
@@ -60,13 +63,13 @@ import org.apache.solr.update.CommitUpdateCommand;
 import org.apache.solr.update.DeleteUpdateCommand;
 import org.apache.solr.update.RollbackUpdateCommand;
 import org.apache.solr.update.processor.UpdateRequestProcessor;
-import org.apache.solr.common.EmptyEntityResolver;
 import org.apache.solr.util.xslt.TransformerProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.InputSource;
 import org.xml.sax.XMLReader;
 
+import static org.apache.solr.common.params.CommonParams.ID;
 import static org.apache.solr.common.params.CommonParams.NAME;
 
 
@@ -132,6 +135,12 @@ public class XMLLoader extends ContentStreamLoader {
 
     String tr = req.getParams().get(CommonParams.TR,null);
     if(tr!=null) {
+      if (req.getCore().getCoreDescriptor().isConfigSetTrusted() == false) {
+          throw new SolrException(ErrorCode.UNAUTHORIZED, "The configset for this collection was uploaded without any authentication in place,"
+                  + " and this operation is not available for collections with untrusted configsets. To use this feature, re-upload the configset"
+                  + " after enabling authentication and authorization.");
+      }
+
       final Transformer t = getTransformer(tr,req);
       final DOMResult result = new DOMResult();
       
@@ -169,7 +178,7 @@ public class XMLLoader extends ContentStreamLoader {
           final byte[] body = IOUtils.toByteArray(is);
           // TODO: The charset may be wrong, as the real charset is later
           // determined by the XML parser, the content-type is only used as a hint!
-          log.trace("body", new String(body, (charset == null) ?
+          log.trace("body: {}", new String(body, (charset == null) ?
             ContentStreamBase.DEFAULT_CHARSET : charset));
           IOUtils.closeQuietly(is);
           is = new ByteArrayInputStream(body);
@@ -318,7 +327,7 @@ public class XMLLoader extends ContentStreamLoader {
       switch (event) {
         case XMLStreamConstants.START_ELEMENT:
           String mode = parser.getLocalName();
-          if (!("id".equals(mode) || "query".equals(mode))) {
+          if (!(ID.equals(mode) || "query".equals(mode))) {
             String msg = "XML element <delete> has invalid XML child element: " + mode;
             log.warn(msg);
             throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
@@ -326,14 +335,14 @@ public class XMLLoader extends ContentStreamLoader {
           }
           text.setLength(0);
           
-          if ("id".equals(mode)) {
+          if (ID.equals(mode)) {
             for (int i = 0; i < parser.getAttributeCount(); i++) {
               String attrName = parser.getAttributeLocalName(i);
               String attrVal = parser.getAttributeValue(i);
               if (UpdateRequestHandler.VERSION.equals(attrName)) {
                 deleteCmd.setVersion(Long.parseLong(attrVal));
               }
-              if (UpdateRequest.ROUTE.equals(attrName)) {
+              if (ShardParams._ROUTE_.equals(attrName)) {
                 deleteCmd.setRoute(attrVal);
               }
             }
@@ -342,7 +351,7 @@ public class XMLLoader extends ContentStreamLoader {
 
         case XMLStreamConstants.END_ELEMENT:
           String currTag = parser.getLocalName();
-          if ("id".equals(currTag)) {
+          if (ID.equals(currTag)) {
             deleteCmd.setId(text.toString());         
           } else if ("query".equals(currTag)) {
             deleteCmd.setQuery(text.toString());
@@ -395,6 +404,7 @@ public class XMLLoader extends ContentStreamLoader {
     StringBuilder text = new StringBuilder();
     String name = null;
     boolean isNull = false;
+    boolean isLabeledChildDoc = false;
     String update = null;
     Collection<SolrInputDocument> subDocs = null;
     Map<String, Map<String, Object>> updateMap = null;
@@ -444,7 +454,13 @@ public class XMLLoader extends ContentStreamLoader {
               }
               break;
             }
-            doc.addField(name, v);
+            if(!isLabeledChildDoc){
+              // only add data if this is not a childDoc, since it was added already
+              doc.addField(name, v);
+            } else {
+              // reset so next field is not treated as child doc
+              isLabeledChildDoc = false;
+            }
             // field is over
             name = null;
           }
@@ -454,6 +470,15 @@ public class XMLLoader extends ContentStreamLoader {
           text.setLength(0);
           String localName = parser.getLocalName();
           if ("doc".equals(localName)) {
+            if(name != null) {
+              // flag to prevent spaces after doc from being added
+              isLabeledChildDoc = true;
+              if(!doc.containsKey(name)) {
+                doc.setField(name, Lists.newArrayList());
+              }
+              doc.addField(name, readDoc(parser));
+              break;
+            }
             if (subDocs == null)
               subDocs = Lists.newArrayList();
             subDocs.add(readDoc(parser));

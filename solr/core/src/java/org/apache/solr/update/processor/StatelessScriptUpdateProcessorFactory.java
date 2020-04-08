@@ -17,6 +17,7 @@
 package org.apache.solr.update.processor;
 
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.core.SolrCore;
@@ -26,7 +27,6 @@ import org.apache.solr.request.LocalSolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.update.*;
 import org.apache.solr.util.plugin.SolrCoreAware;
-import org.apache.commons.lang.StringUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.FilenameUtils;
 
@@ -41,6 +41,12 @@ import java.io.InputStream;
 import java.io.Reader;
 import java.lang.invoke.MethodHandles;
 import java.nio.charset.StandardCharsets;
+import java.security.AccessControlContext;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
+import java.security.ProtectionDomain;
 import java.util.Set;
 import java.util.LinkedHashSet;
 import java.util.ArrayList;
@@ -149,6 +155,7 @@ import org.slf4j.LoggerFactory;
  * &lt;/processor&gt;
  * </pre>
  * 
+ * @since 4.0.0
  */
 public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcessorFactory implements SolrCoreAware {
 
@@ -217,6 +224,11 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
 
   @Override
   public void inform(SolrCore core) {
+    if (!core.getCoreDescriptor().isConfigSetTrusted()) {
+      throw new SolrException(ErrorCode.UNAUTHORIZED, "The configset for this collection was uploaded without any authentication in place,"
+          + " and this operation is not available for collections with untrusted configsets. To use this component, re-upload the configset"
+          + " after enabling authentication and authorization.");
+    }
     resourceLoader = core.getResourceLoader();
 
     // test that our engines & scripts are valid
@@ -263,7 +275,7 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
     }
 
     for (ScriptFile scriptFile : scriptFiles) {
-      ScriptEngine engine = null;
+      final ScriptEngine engine;
       if (null != engineName) {
         engine = scriptEngineManager.getEngineByName(engineName);
         if (engine == null) {
@@ -308,7 +320,17 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
         Reader scriptSrc = scriptFile.openReader(resourceLoader);
   
         try {
-          engine.eval(scriptSrc);
+          try {
+            AccessController.doPrivileged(new PrivilegedExceptionAction<Void>() {
+              @Override
+              public Void run() throws ScriptException  {
+                engine.eval(scriptSrc);
+                return null;
+              }
+            }, SCRIPT_SANDBOX);
+          } catch (PrivilegedActionException e) {
+            throw (ScriptException) e.getException();
+          }
         } catch (ScriptException e) {
           throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, 
                                   "Unable to evaluate script: " + 
@@ -345,7 +367,7 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
           engines.addAll(f.getNames());
         }
       }
-      result = StringUtils.join(engines, ", ");
+      result = String.join(", ", engines);
     } catch (RuntimeException e) {
       /* :NOOP: */
     }
@@ -418,6 +440,15 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
      * cast to a java Boolean.
      */
     private boolean invokeFunction(String name, Object... cmd) {
+      return AccessController.doPrivileged(new PrivilegedAction<Boolean>() {
+        @Override
+        public Boolean run() {
+          return invokeFunctionUnsafe(name, cmd);
+        }
+      }, SCRIPT_SANDBOX);
+    }
+
+    private boolean invokeFunctionUnsafe(String name, Object... cmd) {
 
       for (EngineInfo engine : engines) {
         try {
@@ -490,4 +521,8 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
         (input, StandardCharsets.UTF_8);
     }
   }
+
+  // sandbox for script code: zero permissions
+  private static final AccessControlContext SCRIPT_SANDBOX =
+      new AccessControlContext(new ProtectionDomain[] { new ProtectionDomain(null, null) });
 }

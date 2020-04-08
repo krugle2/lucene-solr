@@ -19,12 +19,18 @@ package org.apache.lucene.queryparser.classic;
 import java.io.IOException;
 import java.util.Objects;
 
-import org.apache.lucene.analysis.*;
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.BaseTokenStreamTestCase;
+import org.apache.lucene.analysis.MockTokenizer;
+import org.apache.lucene.analysis.TokenFilter;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
-import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.QueryVisitor;
 
 /**
  * Test QueryParser's ability to deal with Analyzers that return more
@@ -120,7 +126,7 @@ public class TestMultiAnalyzer extends BaseTokenStreamTestCase {
    * Expands "multi" to "multi" and "multi2", both at the same position,
    * and expands "triplemulti" to "triplemulti", "multi3", and "multi2".
    */
-  private class MultiAnalyzer extends Analyzer {
+  private static class MultiAnalyzer extends Analyzer {
 
     @Override
     public TokenStreamComponents createComponents(String fieldName) {
@@ -129,7 +135,7 @@ public class TestMultiAnalyzer extends BaseTokenStreamTestCase {
     }
   }
 
-  private final class TestFilter extends TokenFilter {
+  private static final class TestFilter extends TokenFilter {
 
     private String prevType;
     private int prevStartOffset;
@@ -191,7 +197,7 @@ public class TestMultiAnalyzer extends BaseTokenStreamTestCase {
    * Analyzes "the quick brown" as: quick(incr=2) brown(incr=1).
    * Does not work correctly for input other than "the quick brown ...".
    */
-  private class PosIncrementAnalyzer extends Analyzer {
+  private static class PosIncrementAnalyzer extends Analyzer {
 
     @Override
     public TokenStreamComponents createComponents(String fieldName) {
@@ -200,7 +206,7 @@ public class TestMultiAnalyzer extends BaseTokenStreamTestCase {
     }
   }
 
-  private final class TestPosIncrementFilter extends TokenFilter {
+  private static final class TestPosIncrementFilter extends TokenFilter {
 
     CharTermAttribute termAtt;
     PositionIncrementAttribute posIncrAtt;
@@ -263,7 +269,12 @@ public class TestMultiAnalyzer extends BaseTokenStreamTestCase {
             return q.toString(f);
         }
 
-        @Override
+      @Override
+      public void visit(QueryVisitor visitor) {
+        q.visit(visitor);
+      }
+
+      @Override
         public boolean equals(Object other) {
             return sameClassAs(other) &&
                    Objects.equals(q, ((DumbQueryWrapper) other).q);

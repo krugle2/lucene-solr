@@ -21,15 +21,19 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.lucene.util.*;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.store.*;
-import org.apache.lucene.document.*;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.LuceneTestCase;
+import org.apache.lucene.util.TestUtil;
 
 public class TestStressAdvance extends LuceneTestCase {
 
   public void testStressAdvance() throws Exception {
-    for(int iter=0;iter<3;iter++) {
+    int numIters = TEST_NIGHTLY ? 3 : 1;
+    for(int iter=0;iter<numIters;iter++) {
       if (VERBOSE) {
         System.out.println("\nTEST: iter=" + iter);
       }
@@ -74,7 +78,7 @@ public class TestStressAdvance extends LuceneTestCase {
           bDocIDs.add(docID);
         }
       }
-      final TermsEnum te = getOnlyLeafReader(r).fields().terms("field").iterator();
+      final TermsEnum te = getOnlyLeafReader(r).terms("field").iterator();
       
       PostingsEnum de = null;
       for(int iter2=0;iter2<10;iter2++) {

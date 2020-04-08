@@ -17,12 +17,10 @@
 package org.apache.solr.client.solrj.io.stream.eval;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.Map;
 
-import junit.framework.Assert;
-
-import org.apache.commons.collections.map.HashedMap;
-import org.apache.lucene.util.LuceneTestCase;
+import org.apache.solr.SolrTestCase;
 import org.apache.solr.client.solrj.io.Tuple;
 import org.apache.solr.client.solrj.io.eval.AddEvaluator;
 import org.apache.solr.client.solrj.io.eval.NaturalLogEvaluator;
@@ -30,7 +28,9 @@ import org.apache.solr.client.solrj.io.eval.StreamEvaluator;
 import org.apache.solr.client.solrj.io.stream.expr.StreamFactory;
 import org.junit.Test;
 
-public class NaturalLogEvaluatorTest extends LuceneTestCase {
+import junit.framework.Assert;
+
+public class NaturalLogEvaluatorTest extends SolrTestCase {
 
   StreamFactory factory;
   Map<String, Object> values;
@@ -40,7 +40,7 @@ public class NaturalLogEvaluatorTest extends LuceneTestCase {
 
     factory = new StreamFactory()
         .withFunctionName("log", NaturalLogEvaluator.class).withFunctionName("add", AddEvaluator.class);
-    values = new HashedMap();
+    values = new HashMap<String,Object>();
   }
 
   @Test
@@ -86,6 +86,7 @@ public class NaturalLogEvaluatorTest extends LuceneTestCase {
     Object result = evaluator.evaluate(new Tuple(values));
     assertNull(result);
   }
+
   @Test
   public void logNullValue() throws Exception{
     StreamEvaluator evaluator = factory.constructEvaluator("log(a)");

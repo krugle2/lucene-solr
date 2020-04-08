@@ -19,6 +19,7 @@ package org.apache.solr.client.solrj.impl;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.invoke.MethodHandles;
+import java.lang.reflect.InvocationTargetException;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -47,6 +48,7 @@ import org.apache.http.config.RegistryBuilder;
 import org.apache.http.conn.ConnectionKeepAliveStrategy;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.apache.http.conn.socket.PlainConnectionSocketFactory;
+import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.entity.HttpEntityWrapper;
 import org.apache.http.impl.client.BasicCredentialsProvider;
@@ -56,6 +58,7 @@ import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.protocol.HttpRequestExecutor;
+import org.apache.http.ssl.SSLContexts;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.ObjectReleaseTracker;
@@ -71,10 +74,12 @@ import org.slf4j.LoggerFactory;
  */
 public class HttpClientUtil {
   
-  private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
   
-  private static final int DEFAULT_CONNECT_TIMEOUT = 60000;
-  private static final int DEFAULT_SO_TIMEOUT = 600000;
+  public static final int DEFAULT_CONNECT_TIMEOUT = 60000;
+  public static final int DEFAULT_SO_TIMEOUT = 600000;
+  public static final int DEFAULT_MAXCONNECTIONSPERHOST = 100000;
+  public static final int DEFAULT_MAXCONNECTIONS = 100000;
   
   private static final int VALIDATE_AFTER_INACTIVITY_DEFAULT = 3000;
   private static final int EVICT_IDLE_CONNECTIONS_DEFAULT = 50000;
@@ -93,7 +98,16 @@ public class HttpClientUtil {
   public static final String PROP_BASIC_AUTH_USER = "httpBasicAuthUser";
   // Basic auth password 
   public static final String PROP_BASIC_AUTH_PASS = "httpBasicAuthPassword";
-  
+
+  /**
+   * System property consulted to determine if the default {@link SocketFactoryRegistryProvider} 
+   * will require hostname validation of SSL Certificates.  The default behavior is to enforce 
+   * peer name validation.
+   * <p>
+   * This property will have no effect if {@link #setSocketFactoryRegistryProvider} is used to override
+   * the default {@link SocketFactoryRegistryProvider} 
+   * </p>
+   */
   public static final String SYS_PROP_CHECK_PEER_NAME = "solr.ssl.checkPeerName";
   
   // * NOTE* The following params configure the default request config and this
@@ -118,6 +132,12 @@ public class HttpClientUtil {
    */
   public static final String SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY = "solr.httpclient.builder.factory";
 
+  /**
+   * A Java system property to select the {@linkplain SocketFactoryRegistryProvider} used for
+   * configuring the Apache HTTP clients.
+   */
+  public static final String SYS_PROP_SOCKET_FACTORY_REGISTRY_PROVIDER = "solr.httpclient.socketFactory.registry.provider";
+
   static final DefaultHttpRequestRetryHandler NO_RETRY = new DefaultHttpRequestRetryHandler(
       0, false);
 
@@ -125,7 +145,7 @@ public class HttpClientUtil {
 
   private static SolrHttpClientContextBuilder httpClientRequestContextBuilder = new SolrHttpClientContextBuilder();
 
-  private static volatile SchemaRegistryProvider schemaRegistryProvider;
+  private static volatile SocketFactoryRegistryProvider socketFactoryRegistryProvider;
   private static volatile String cookiePolicy;
   private static final List<HttpRequestInterceptor> interceptors = new CopyOnWriteArrayList<>();
 
@@ -133,22 +153,33 @@ public class HttpClientUtil {
   static {
     resetHttpClientBuilder();
 
+    // Configure the SocketFactoryRegistryProvider if user has specified the provider type.
+    String socketFactoryRegistryProviderClassName = System.getProperty(SYS_PROP_SOCKET_FACTORY_REGISTRY_PROVIDER);
+    if (socketFactoryRegistryProviderClassName != null) {
+      log.debug("Using " + socketFactoryRegistryProviderClassName);
+      try {
+        socketFactoryRegistryProvider = (SocketFactoryRegistryProvider)Class.forName(socketFactoryRegistryProviderClassName).getConstructor().newInstance();
+      } catch (InstantiationException | IllegalAccessException | ClassNotFoundException | InvocationTargetException | NoSuchMethodException e) {
+        throw new RuntimeException("Unable to instantiate Solr SocketFactoryRegistryProvider", e);
+      }
+    }
+
     // Configure the HttpClientBuilder if user has specified the factory type.
     String factoryClassName = System.getProperty(SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY);
     if (factoryClassName != null) {
-      logger.debug ("Using " + factoryClassName);
+      log.debug ("Using " + factoryClassName);
       try {
-        HttpClientBuilderFactory factory = (HttpClientBuilderFactory)Class.forName(factoryClassName).newInstance();
+        HttpClientBuilderFactory factory = (HttpClientBuilderFactory)Class.forName(factoryClassName).getConstructor().newInstance();
         httpClientBuilder = factory.getHttpClientBuilder(Optional.of(SolrHttpClientBuilder.create()));
-      } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+      } catch (InstantiationException | IllegalAccessException | ClassNotFoundException | InvocationTargetException | NoSuchMethodException e) {
         throw new RuntimeException("Unable to instantiate Solr HttpClientBuilderFactory", e);
       }
     }
   }
 
-  public static abstract class SchemaRegistryProvider {
+  public static abstract class SocketFactoryRegistryProvider {
     /** Must be non-null */
-    public abstract Registry<ConnectionSocketFactory> getSchemaRegistry();
+    public abstract Registry<ConnectionSocketFactory> getSocketFactoryRegistry();
   }
 
   private static class DynamicInterceptor implements HttpRequestInterceptor {
@@ -165,7 +196,7 @@ public class HttpClientUtil {
           try {
             interceptor.process(request, context);
           } catch (Exception e) {
-            logger.error("", e);
+            log.error("", e);
           }
         }
       });
@@ -181,33 +212,52 @@ public class HttpClientUtil {
     httpClientBuilder = newHttpClientBuilder;
   }
 
-  public static void setSchemaRegistryProvider(SchemaRegistryProvider newRegistryProvider) {
-    schemaRegistryProvider = newRegistryProvider;
+  /**
+   * @see #SYS_PROP_CHECK_PEER_NAME
+   */
+  public static void setSocketFactoryRegistryProvider(SocketFactoryRegistryProvider newRegistryProvider) {
+    socketFactoryRegistryProvider = newRegistryProvider;
   }
   
   public static SolrHttpClientBuilder getHttpClientBuilder() {
     return httpClientBuilder;
   }
-  
-  public static SchemaRegistryProvider getSchemaRegisteryProvider() {
-    return schemaRegistryProvider;
+
+  /**
+   * @see #SYS_PROP_CHECK_PEER_NAME
+   */
+  public static SocketFactoryRegistryProvider getSocketFactoryRegistryProvider() {
+    return socketFactoryRegistryProvider;
   }
   
   public static void resetHttpClientBuilder() {
-    schemaRegistryProvider = new DefaultSchemaRegistryProvider();
+    socketFactoryRegistryProvider = new DefaultSocketFactoryRegistryProvider();
     httpClientBuilder = SolrHttpClientBuilder.create();
   }
 
-  private static final class DefaultSchemaRegistryProvider extends SchemaRegistryProvider {
+  private static final class DefaultSocketFactoryRegistryProvider extends SocketFactoryRegistryProvider {
     @Override
-    public Registry<ConnectionSocketFactory> getSchemaRegistry() {
+    public Registry<ConnectionSocketFactory> getSocketFactoryRegistry() {
       // this mimics PoolingHttpClientConnectionManager's default behavior,
       // except that we explicitly use SSLConnectionSocketFactory.getSystemSocketFactory()
       // to pick up the system level default SSLContext (where javax.net.ssl.* properties
       // related to keystore & truststore are specified)
-      RegistryBuilder<ConnectionSocketFactory> builder = RegistryBuilder.<ConnectionSocketFactory>create();
+      RegistryBuilder<ConnectionSocketFactory> builder = RegistryBuilder.<ConnectionSocketFactory> create();
       builder.register("http", PlainConnectionSocketFactory.getSocketFactory());
-      builder.register("https", SSLConnectionSocketFactory.getSystemSocketFactory());
+
+      // logic to turn off peer host check
+      SSLConnectionSocketFactory sslConnectionSocketFactory = null;
+      boolean sslCheckPeerName = toBooleanDefaultIfNull(
+          toBooleanObject(System.getProperty(HttpClientUtil.SYS_PROP_CHECK_PEER_NAME)), true);
+      if (sslCheckPeerName) {
+        sslConnectionSocketFactory = SSLConnectionSocketFactory.getSystemSocketFactory();
+      } else {
+        sslConnectionSocketFactory = new SSLConnectionSocketFactory(SSLContexts.createSystemDefault(),
+                                                                    NoopHostnameVerifier.INSTANCE);
+        log.debug(HttpClientUtil.SYS_PROP_CHECK_PEER_NAME + "is false, hostname checks disabled.");
+      }
+      builder.register("https", sslConnectionSocketFactory);
+
       return builder.build();
     }
   }
@@ -225,7 +275,7 @@ public class HttpClientUtil {
 
   /** test usage subject to change @lucene.experimental */ 
   static PoolingHttpClientConnectionManager createPoolingConnectionManager() {
-    return new PoolingHttpClientConnectionManager(schemaRegistryProvider.getSchemaRegistry());
+    return new PoolingHttpClientConnectionManager(socketFactoryRegistryProvider.getSocketFactoryRegistry());
   }
   
   public static CloseableHttpClient createClient(SolrParams params, PoolingHttpClientConnectionManager cm) {
@@ -238,8 +288,8 @@ public class HttpClientUtil {
 
   public static CloseableHttpClient createClient(final SolrParams params, PoolingHttpClientConnectionManager cm, boolean sharedConnectionManager, HttpRequestExecutor httpRequestExecutor)  {
     final ModifiableSolrParams config = new ModifiableSolrParams(params);
-    if (logger.isDebugEnabled()) {
-      logger.debug("Creating new http client, config:" + config);
+    if (log.isDebugEnabled()) {
+      log.debug("Creating new http client, config:" + config);
     }
 
     cm.setMaxTotal(params.getInt(HttpClientUtil.PROP_MAX_CONNECTIONS, 10000));
@@ -315,7 +365,7 @@ public class HttpClientUtil {
     HttpClientBuilder retBuilder = builder.setDefaultRequestConfig(requestConfig);
 
     if (config.getBool(HttpClientUtil.PROP_USE_RETRY, true)) {
-      retBuilder = retBuilder.setRetryHandler(new SolrHttpRequestRetryHandler(3));
+      retBuilder = retBuilder.setRetryHandler(new SolrHttpRequestRetryHandler(Integer.getInteger("solr.httpclient.retries", 3)));
 
     } else {
       retBuilder = retBuilder.setRetryHandler(NO_RETRY);
@@ -459,5 +509,26 @@ public class HttpClientUtil {
     cookiePolicy = policyName;
   }
 
+  /**
+   * @lucene.internal
+   */
+  static boolean toBooleanDefaultIfNull(Boolean bool, boolean valueIfNull) {
+    if (bool == null) {
+      return valueIfNull;
+    }
+    return bool.booleanValue() ? true : false;
+  }
 
+  /**
+   * @lucene.internal
+   */
+  static Boolean toBooleanObject(String str) {
+    if ("true".equalsIgnoreCase(str)) {
+      return Boolean.TRUE;
+    } else if ("false".equalsIgnoreCase(str)) {
+      return Boolean.FALSE;
+    }
+    // no match
+    return null;
+  }
 }

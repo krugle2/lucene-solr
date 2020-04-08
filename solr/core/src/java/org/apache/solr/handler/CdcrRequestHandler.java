@@ -24,14 +24,17 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
+import java.util.stream.Collectors;
 
 import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.SolrServerException;
@@ -40,8 +43,11 @@ import org.apache.solr.client.solrj.request.AbstractUpdateRequest;
 import org.apache.solr.client.solrj.request.QueryRequest;
 import org.apache.solr.client.solrj.request.UpdateRequest;
 import org.apache.solr.cloud.ZkController;
+import org.apache.solr.cloud.ZkShardTerms;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.cloud.ClusterState;
+import org.apache.solr.common.cloud.DocCollection;
+import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.cloud.ZkCoreNodeProps;
 import org.apache.solr.common.cloud.ZkNodeProps;
@@ -60,6 +66,7 @@ import org.apache.solr.request.SolrRequestHandler;
 import org.apache.solr.request.SolrRequestInfo;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.update.CdcrUpdateLog;
+import org.apache.solr.update.SolrCoreState;
 import org.apache.solr.update.UpdateLog;
 import org.apache.solr.update.VersionInfo;
 import org.apache.solr.update.processor.DistributedUpdateProcessor;
@@ -108,6 +115,7 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
 
   private SolrCore core;
   private String collection;
+  private String shard;
   private String path;
 
   private SolrParams updateLogSynchronizerConfiguration;
@@ -130,19 +138,19 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
       // Configuration of the Update Log Synchronizer
       Object updateLogSynchonizerParam = args.get(CdcrParams.UPDATE_LOG_SYNCHRONIZER_PARAM);
       if (updateLogSynchonizerParam != null && updateLogSynchonizerParam instanceof NamedList) {
-        updateLogSynchronizerConfiguration = SolrParams.toSolrParams((NamedList) updateLogSynchonizerParam);
+        updateLogSynchronizerConfiguration = ((NamedList) updateLogSynchonizerParam).toSolrParams();
       }
 
       // Configuration of the Replicator
       Object replicatorParam = args.get(CdcrParams.REPLICATOR_PARAM);
       if (replicatorParam != null && replicatorParam instanceof NamedList) {
-        replicatorConfiguration = SolrParams.toSolrParams((NamedList) replicatorParam);
+        replicatorConfiguration = ((NamedList) replicatorParam).toSolrParams();
       }
 
       // Configuration of the Buffer
       Object bufferParam = args.get(CdcrParams.BUFFER_PARAM);
       if (bufferParam != null && bufferParam instanceof NamedList) {
-        bufferConfiguration = SolrParams.toSolrParams((NamedList) bufferParam);
+        bufferConfiguration = ((NamedList) bufferParam).toSolrParams();
       }
 
       // Configuration of the Replicas
@@ -150,7 +158,7 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
       List replicas = args.getAll(CdcrParams.REPLICA_PARAM);
       for (Object replica : replicas) {
         if (replica != null && replica instanceof NamedList) {
-          SolrParams params = SolrParams.toSolrParams((NamedList) replica);
+          SolrParams params = ((NamedList) replica).toSolrParams();
           if (!replicasConfiguration.containsKey(params.get(CdcrParams.SOURCE_COLLECTION_PARAM))) {
             replicasConfiguration.put(params.get(CdcrParams.SOURCE_COLLECTION_PARAM), new ArrayList<>());
           }
@@ -242,9 +250,10 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
   public void inform(SolrCore core) {
     this.core = core;
     collection = core.getCoreDescriptor().getCloudDescriptor().getCollectionName();
+    shard = core.getCoreDescriptor().getCloudDescriptor().getShardId();
 
     // Make sure that the core is ZKAware
-    if (!core.getCoreDescriptor().getCoreContainer().isZooKeeperAware()) {
+    if (!core.getCoreContainer().isZooKeeperAware()) {
       throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
           "Solr instance is not running in SolrCloud mode.");
     }
@@ -321,9 +330,7 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
 
       @Override
       public void preClose(SolrCore core) {
-        String collectionName = core.getCoreDescriptor().getCloudDescriptor().getCollectionName();
-        String shard = core.getCoreDescriptor().getCloudDescriptor().getShardId();
-        log.info("Solr core is being closed - shutting down CDCR handler @ {}:{}", collectionName, shard);
+        log.info("Solr core is being closed - shutting down CDCR handler @ {}:{}", collection, shard);
 
         updateLogSynchronizer.shutdown();
         replicatorManager.shutdown();
@@ -390,14 +397,15 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
    */
   private void handleCollectionCheckpointAction(SolrQueryRequest req, SolrQueryResponse rsp)
       throws IOException, SolrServerException {
-    ZkController zkController = core.getCoreDescriptor().getCoreContainer().getZkController();
+    ZkController zkController = core.getCoreContainer().getZkController();
     try {
       zkController.getZkStateReader().forceUpdateCollection(collection);
     } catch (Exception e) {
       log.warn("Error when updating cluster state", e);
     }
     ClusterState cstate = zkController.getClusterState();
-    Collection<Slice> shards = cstate.getActiveSlices(collection);
+    DocCollection docCollection = cstate.getCollectionOrNull(collection);
+    Collection<Slice> shards = docCollection == null? null : docCollection.getActiveSlices();
 
     ExecutorService parallelExecutor = ExecutorUtil.newMDCAwareCachedThreadPool(new DefaultSolrThreadFactory("parallelCdcrExecutor"));
 
@@ -615,11 +623,7 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
     rsp.add(CdcrParams.ERRORS, hosts);
   }
 
-  private AtomicBoolean running = new AtomicBoolean();
-  private volatile Future<Boolean> bootstrapFuture;
-  private volatile BootstrapCallable bootstrapCallable;
-
-  private void handleBootstrapAction(SolrQueryRequest req, SolrQueryResponse rsp) throws IOException, SolrServerException {
+  private void handleBootstrapAction(SolrQueryRequest req, SolrQueryResponse rsp) throws IOException, InterruptedException, SolrServerException {
     String collectionName = core.getCoreDescriptor().getCloudDescriptor().getCollectionName();
     String shard = core.getCoreDescriptor().getCloudDescriptor().getShardId();
     if (!leaderStateManager.amILeader()) {
@@ -627,18 +631,25 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
       throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Action " + CdcrParams.CdcrAction.BOOTSTRAP +
           " sent to non-leader replica");
     }
+    CountDownLatch latch = new CountDownLatch(1); // latch to make sure BOOTSTRAP_STATUS gives correct response
 
     Runnable runnable = () -> {
       Lock recoveryLock = req.getCore().getSolrCoreState().getRecoveryLock();
       boolean locked = recoveryLock.tryLock();
+      SolrCoreState coreState = core.getSolrCoreState();
       try {
         if (!locked)  {
           handleCancelBootstrap(req, rsp);
         } else if (leaderStateManager.amILeader())  {
-          running.set(true);
+          coreState.setCdcrBootstrapRunning(true);
+          latch.countDown(); // free the latch as current bootstrap is executing
+          //running.set(true);
           String masterUrl = req.getParams().get(ReplicationHandler.MASTER_URL);
-          bootstrapCallable = new BootstrapCallable(masterUrl, core);
-          bootstrapFuture = core.getCoreDescriptor().getCoreContainer().getUpdateShardHandler().getRecoveryExecutor().submit(bootstrapCallable);
+          BootstrapCallable bootstrapCallable = new BootstrapCallable(masterUrl, core);
+          coreState.setCdcrBootstrapCallable(bootstrapCallable);
+          Future<Boolean> bootstrapFuture = core.getCoreContainer().getUpdateShardHandler().getRecoveryExecutor()
+              .submit(bootstrapCallable);
+          coreState.setCdcrBootstrapFuture(bootstrapFuture);
           try {
             bootstrapFuture.get();
           } catch (InterruptedException e) {
@@ -652,15 +663,18 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
         }
       } finally {
         if (locked) {
-          running.set(false);
+          coreState.setCdcrBootstrapRunning(false);
           recoveryLock.unlock();
+        } else {
+          latch.countDown(); // free the latch as current bootstrap is executing
         }
       }
     };
 
     try {
-      core.getCoreDescriptor().getCoreContainer().getUpdateShardHandler().getUpdateExecutor().submit(runnable);
+      core.getCoreContainer().getUpdateShardHandler().getUpdateExecutor().submit(runnable);
       rsp.add(RESPONSE_STATUS, "submitted");
+      latch.await(10000, TimeUnit.MILLISECONDS); // put the latch for current bootstrap command
     } catch (RejectedExecutionException ree)  {
       // no problem, we're probably shutting down
       rsp.add(RESPONSE_STATUS, "failed");
@@ -668,19 +682,20 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
   }
 
   private void handleCancelBootstrap(SolrQueryRequest req, SolrQueryResponse rsp) {
-    BootstrapCallable callable = this.bootstrapCallable;
+    BootstrapCallable callable = (BootstrapCallable)core.getSolrCoreState().getCdcrBootstrapCallable();
     IOUtils.closeQuietly(callable);
     rsp.add(RESPONSE_STATUS, "cancelled");
   }
 
   private void handleBootstrapStatus(SolrQueryRequest req, SolrQueryResponse rsp) throws IOException, SolrServerException {
-    if (running.get()) {
+    SolrCoreState coreState = core.getSolrCoreState();
+    if (coreState.getCdcrBootstrapRunning()) {
       rsp.add(RESPONSE_STATUS, RUNNING);
       return;
     }
 
-    Future<Boolean> future = bootstrapFuture;
-    BootstrapCallable callable = this.bootstrapCallable;
+    Future<Boolean> future = coreState.getCdcrBootstrapFuture();
+    BootstrapCallable callable = (BootstrapCallable)coreState.getCdcrBootstrapCallable();
     if (future == null) {
       rsp.add(RESPONSE_STATUS, "notfound");
       rsp.add(RESPONSE_MESSAGE, "No bootstrap found in running, completed or failed states");
@@ -709,7 +724,7 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
     }
   }
 
-  private static class BootstrapCallable implements Callable<Boolean>, Closeable {
+  static class BootstrapCallable implements Callable<Boolean>, Closeable {
     private final String masterUrl;
     private final SolrCore core;
     private volatile boolean closed = false;
@@ -754,7 +769,7 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
         // we do not want the raw tlog files from the source
         solrParams.set(ReplicationHandler.TLOG_FILES, false);
 
-        success = replicationHandler.doFetch(solrParams, false);
+        success = replicationHandler.doFetch(solrParams, false).getSuccessful();
 
         // this is required because this callable can race with HttpSolrCall#destroy
         // which clears the request info.
@@ -775,6 +790,17 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
             throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Replay failed");
           }
         }
+        if (success)  {
+          ZkController zkController = core.getCoreContainer().getZkController();
+          String collectionName = core.getCoreDescriptor().getCollectionName();
+          ClusterState clusterState = zkController.getZkStateReader().getClusterState();
+          DocCollection collection = clusterState.getCollection(collectionName);
+          Slice slice = collection.getSlice(core.getCoreDescriptor().getCloudDescriptor().getShardId());
+          ZkShardTerms terms = zkController.getShardTerms(collectionName, slice.getName());
+          String coreNodeName = core.getCoreDescriptor().getCloudDescriptor().getCoreNodeName();
+          Set<String> allExceptLeader = slice.getReplicas().stream().filter(replica -> !replica.getName().equals(coreNodeName)).map(Replica::getName).collect(Collectors.toSet());
+          terms.ensureTermsIsHigher(coreNodeName, allExceptLeader);
+        }
         return success;
       } finally {
         if (closed || !success) {
@@ -789,8 +815,9 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
 
     private void commitOnLeader(String leaderUrl) throws SolrServerException,
         IOException {
-      try (HttpSolrClient client = new HttpSolrClient.Builder(leaderUrl).build()) {
-        client.setConnectionTimeout(30000);
+      try (HttpSolrClient client = new HttpSolrClient.Builder(leaderUrl)
+          .withConnectionTimeout(30000)
+          .build()) {
         UpdateRequest ureq = new UpdateRequest();
         ureq.setParams(new ModifiableSolrParams());
         ureq.getParams().set(DistributedUpdateProcessor.COMMIT_END_POINT, true);
@@ -827,9 +854,10 @@ public class CdcrRequestHandler extends RequestHandlerBase implements SolrCoreAw
 
     @Override
     public Long call() throws Exception {
-      try (HttpSolrClient server = new HttpSolrClient.Builder(baseUrl).build()) {
-        server.setConnectionTimeout(15000);
-        server.setSoTimeout(60000);
+      try (HttpSolrClient server = new HttpSolrClient.Builder(baseUrl)
+          .withConnectionTimeout(15000)
+          .withSocketTimeout(60000)
+          .build()) {
 
         ModifiableSolrParams params = new ModifiableSolrParams();
         params.set(CommonParams.ACTION, CdcrParams.CdcrAction.SHARDCHECKPOINT.toString());

@@ -22,32 +22,36 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.Future;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.lucene.util.LuceneTestCase.Slow;
 import org.apache.solr.SolrTestCaseJ4.SuppressSSL;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.embedded.JettySolrRunner;
-import org.apache.solr.client.solrj.impl.HttpSolrClient;
+import org.apache.solr.client.solrj.impl.BaseHttpSolrClient;
 import org.apache.solr.client.solrj.response.FacetField;
 import org.apache.solr.client.solrj.response.FieldStatsInfo;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.client.solrj.response.RangeFacet;
-import org.apache.solr.cloud.ChaosMonkey;
 import org.apache.solr.common.EnumFieldValue;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.params.CommonParams;
+import org.apache.solr.common.params.FacetParams.FacetRangeMethod;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.ShardParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.params.StatsParams;
-import org.apache.solr.common.params.FacetParams.FacetRangeMethod;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.handler.component.ShardResponse;
 import org.apache.solr.handler.component.StatsComponentTest.StatSetCombinations;
@@ -100,10 +104,23 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
     // we validate the connection before use on the restarted
     // server so that we don't use a bad one
     System.setProperty("validateAfterInactivity", "200");
+    
+    System.setProperty("solr.httpclient.retries", "0");
+    System.setProperty("distribUpdateSoTimeout", "5000");
+    
+
+  }
+
+  public TestDistributedSearch() {
+    // we need DVs on point fields to compute stats & facets
+    if (Boolean.getBoolean(NUMERIC_POINTS_SYSPROP)) System.setProperty(NUMERIC_DOCVALUES_SYSPROP,"true");
   }
   
   @Test
   public void test() throws Exception {
+    
+    assertEquals(clients.size(), jettys.size());
+    
     QueryResponse rsp = null;
     int backupStress = stress; // make a copy so we can restore
 
@@ -242,7 +259,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
                 "facet.field", tdate_b, "facet.field", tdate_a);
     assertEquals(2, rsp.getFacetFields().size());
     
-    String facetQuery = "id:[1 TO 15]";
+    String facetQuery = "id_i1:[1 TO 15]";
 
     // simple range facet on one field
     query("q",facetQuery, "rows",100, "facet","true", 
@@ -283,9 +300,9 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
           "facet.range.end",900,
           "facet.range.other","all");
     assertEquals(tlong, response.getFacetRanges().get(0).getName());
-    assertEquals(new Integer(6), response.getFacetRanges().get(0).getBefore());
-    assertEquals(new Integer(5), response.getFacetRanges().get(0).getBetween());
-    assertEquals(new Integer(2), response.getFacetRanges().get(0).getAfter());
+    assertEquals(6, response.getFacetRanges().get(0).getBefore());
+    assertEquals(5, response.getFacetRanges().get(0).getBetween());
+    assertEquals(2, response.getFacetRanges().get(0).getAfter());
 
     // Test mincounts. Do NOT want to go through all the stuff where with validateControlData in query() method
     // Purposely packing a _bunch_ of stuff together here to insure that the proper level of mincount is used for
@@ -381,7 +398,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
     query("q","*:*", "fl","n_*","sort",i1 + " desc");
 
     // basic spellcheck testing
-    query("q", "toyata", "fl", "id,lowerfilt", "spellcheck", true, "spellcheck.q", "toyata", "qt", "spellCheckCompRH_Direct", "shards.qt", "spellCheckCompRH_Direct");
+    query("q", "toyata", "fl", "id,lowerfilt", "spellcheck", true, "spellcheck.q", "toyata", "qt", "/spellCheckCompRH_Direct", "shards.qt", "/spellCheckCompRH_Direct");
 
     stress=0;  // turn off stress... we want to tex max combos in min time
     for (int i=0; i<25*RANDOM_MULTIPLIER; i++) {
@@ -390,7 +407,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
 
       // we want a random query and not just *:* so we'll get zero counts in facets also
       // TODO: do a better random query
-      String q = random().nextBoolean() ? "*:*" : "id:(1 3 5 7 9 11 13) OR id:[100 TO " + random().nextInt(50) + "]";
+      String q = random().nextBoolean() ? "*:*" : "id:(1 3 5 7 9 11 13) OR id_i1:[100 TO " + random().nextInt(50) + "]";
 
       int nolimit = random().nextBoolean() ? -1 : 10000;  // these should be equivalent
 
@@ -412,7 +429,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
     ,"facet.field","{!key=other ex=b}"+t1
     ,"facet.field","{!key=again ex=a,b}"+t1
     ,"facet.field",t1
-    ,"fq","{!tag=a}id:[1 TO 7]", "fq","{!tag=b}id:[3 TO 9]"
+    ,"fq","{!tag=a}id_i1:[1 TO 7]", "fq","{!tag=b}id_i1:[3 TO 9]"
     );
     queryAndCompareUIF("q", "*:*", "facet", "true", "facet.field", "{!ex=t1}SubjectTerms_mfacet", "fq", "{!tag=t1}SubjectTerms_mfacet:(test 1)", "facet.limit", "10", "facet.mincount", "1");
 
@@ -442,7 +459,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
       // long
       FieldStatsInfo s = rsp.getFieldStatsInfo().get(tlong);
       assertNotNull("missing stats", s);
-      assertEquals("wrong cardinality", new Long(13), s.getCardinality());
+      assertEquals("wrong cardinality", Long.valueOf(13), s.getCardinality());
       //
       assertNull("expected null for min", s.getMin());
       assertNull("expected null for mean", s.getMean());
@@ -458,7 +475,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
       // string
       s = rsp.getFieldStatsInfo().get(oddField);
       assertNotNull("missing stats", s);
-      assertEquals("wrong cardinality", new Long(1), s.getCardinality());
+      assertEquals("wrong cardinality", Long.valueOf(1), s.getCardinality());
       //
       assertNull("expected null for min", s.getMin());
       assertNull("expected null for mean", s.getMean());
@@ -522,7 +539,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
           "stats.field", "{!key=special_key}stats_dt");
     query("q","*:*", "sort",i1+" desc", "stats", "true", 
           "f.stats_dt.stats.calcdistinct", "true",
-          "fq", "{!tag=xxx}id:[3 TO 9]",
+          "fq", "{!tag=xxx}id_i1:[3 TO 9]",
           "stats.field", "{!key=special_key}stats_dt",
           "stats.field", "{!ex=xxx}stats_dt");
 
@@ -721,7 +738,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
       assertNotNull(p+" no stats for " + i1, s);
       //
       assertEquals(p+" wrong min", -987.0D, (Double)s.getMin(), 0.0001D );
-      assertEquals(p+" wrong calcDistinct", new Long(13), s.getCountDistinct());
+      assertEquals(p+" wrong calcDistinct", Long.valueOf(13), s.getCountDistinct());
       assertNotNull(p+" expected non-null list for distinct vals", s.getDistinctValues());
       assertEquals(p+" expected list for distinct vals", 13, s.getDistinctValues().size());
       //
@@ -904,13 +921,11 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
 
     //SOLR 3161 ensure shards.qt=/update fails (anything but search handler really)
     // Also see TestRemoteStreaming#testQtUpdateFails()
-    try {
-      ignoreException("isShard is only acceptable");
-      // query("q","*:*","shards.qt","/update","stream.body","<delete><query>*:*</query></delete>");
-      // fail();
-    } catch (SolrException e) {
-      //expected
-    }
+
+    //SolrException e = expectThrows(SolrException.class, () -> {
+    //  ignoreException("isShard is only acceptable");
+    //  query("q","*:*","shards.qt","/update","stream.body","<delete><query>*:*</query></delete>");
+    //});
     unIgnoreException("isShard is only acceptable");
 
     // test debugging
@@ -920,20 +935,20 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
     handle.put("time", SKIPVAL);
     handle.put("track", SKIP); //track is not included in single node search
     query("q","now their fox sat had put","fl","*,score",CommonParams.DEBUG_QUERY, "true");
-    query("q", "id:[1 TO 5]", CommonParams.DEBUG_QUERY, "true");
-    query("q", "id:[1 TO 5]", CommonParams.DEBUG, CommonParams.TIMING);
-    query("q", "id:[1 TO 5]", CommonParams.DEBUG, CommonParams.RESULTS);
-    query("q", "id:[1 TO 5]", CommonParams.DEBUG, CommonParams.QUERY);
+    query("q", "id_i1:[1 TO 5]", CommonParams.DEBUG_QUERY, "true");
+    query("q", "id_i1:[1 TO 5]", CommonParams.DEBUG, CommonParams.TIMING);
+    query("q", "id_i1:[1 TO 5]", CommonParams.DEBUG, CommonParams.RESULTS);
+    query("q", "id_i1:[1 TO 5]", CommonParams.DEBUG, CommonParams.QUERY);
 
     // SOLR-6545, wild card field list
     indexr(id, "19", "text", "d", "cat_a_sS", "1" ,t1, "2");
     commit();
 
     rsp = query("q", "id:19", "fl", "id", "fl", "*a_sS");
-    assertFieldValues(rsp.getResults(), "id", 19);
+    assertFieldValues(rsp.getResults(), "id", "19");
 
     rsp = query("q", "id:19", "fl", "id," + t1 + ",cat*");
-    assertFieldValues(rsp.getResults(), "id", 19);
+    assertFieldValues(rsp.getResults(), "id", "19");
 
     // Check Info is added to for each shard
     ModifiableSolrParams q = new ModifiableSolrParams();
@@ -949,74 +964,81 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
     assertEquals("should have an entry for each shard ["+sinfo+"] "+shards, cnt, sinfo.size());
 
     // test shards.tolerant=true
-    for(int numDownServers = 0; numDownServers < jettys.size()-1; numDownServers++)
-    {
-      List<JettySolrRunner> upJettys = new ArrayList<>(jettys);
-      List<SolrClient> upClients = new ArrayList<>(clients);
-      List<JettySolrRunner> downJettys = new ArrayList<>();
-      List<String> upShards = new ArrayList<>(Arrays.asList(shardsArr));
-      for(int i=0; i<numDownServers; i++)
-      {
-        // shut down some of the jettys
-        int indexToRemove = r.nextInt(upJettys.size());
-        JettySolrRunner downJetty = upJettys.remove(indexToRemove);
-        upClients.remove(indexToRemove);
-        upShards.remove(indexToRemove);
-        ChaosMonkey.stop(downJetty);
-        downJettys.add(downJetty);
+
+    List<JettySolrRunner> upJettys = Collections.synchronizedList(new ArrayList<>(jettys));
+    List<SolrClient> upClients = Collections.synchronizedList(new ArrayList<>(clients));
+    List<JettySolrRunner> downJettys = Collections.synchronizedList(new ArrayList<>());
+    List<String> upShards = Collections.synchronizedList(new ArrayList<>(Arrays.asList(shardsArr)));
+    
+    int cap =  Math.max(upJettys.size() - 1, 1);
+
+    int numDownServers = random().nextInt(cap);
+    for (int i = 0; i < numDownServers; i++) {
+      if (upJettys.size() == 1) {
+        continue;
       }
-
-      queryPartialResults(upShards, upClients, 
-          "q","*:*",
-          "facet","true", 
-          "facet.field",t1,
-          "facet.field",t1,
-          "facet.limit",5,
-          ShardParams.SHARDS_INFO,"true",
-          ShardParams.SHARDS_TOLERANT,"true");
-
-      queryPartialResults(upShards, upClients,
-          "q", "*:*",
-          "facet", "true",
-          "facet.query", i1 + ":[1 TO 50]",
-          "facet.query", i1 + ":[1 TO 50]",
-          ShardParams.SHARDS_INFO, "true",
-          ShardParams.SHARDS_TOLERANT, "true");
-
-      // test group query
-      queryPartialResults(upShards, upClients,
-           "q", "*:*",
-           "rows", 100,
-           "fl", "id," + i1,
-           "group", "true",
-           "group.query", t1 + ":kings OR " + t1 + ":eggs",
-           "group.limit", 10,
-           "sort", i1 + " asc, id asc",
-           CommonParams.TIME_ALLOWED, 1,
-           ShardParams.SHARDS_INFO, "true",
-           ShardParams.SHARDS_TOLERANT, "true");
-
-      queryPartialResults(upShards, upClients,
-          "q", "*:*",
-          "stats", "true",
-          "stats.field", i1,
-          ShardParams.SHARDS_INFO, "true",
-          ShardParams.SHARDS_TOLERANT, "true");
-
-      queryPartialResults(upShards, upClients,
-          "q", "toyata",
-          "spellcheck", "true",
-          "spellcheck.q", "toyata",
-          "qt", "spellCheckCompRH_Direct",
-          "shards.qt", "spellCheckCompRH_Direct",
-          ShardParams.SHARDS_INFO, "true",
-          ShardParams.SHARDS_TOLERANT, "true");
-
-      // restart the jettys
-      for (JettySolrRunner downJetty : downJettys) {
-        ChaosMonkey.start(downJetty);
-      }
+      // shut down some of the jettys
+      int indexToRemove = r.nextInt(upJettys.size() - 1);
+      JettySolrRunner downJetty = upJettys.remove(indexToRemove);
+      upClients.remove(indexToRemove);
+      upShards.remove(indexToRemove);
+      downJetty.stop();
+      downJettys.add(downJetty);
     }
+    
+    Thread.sleep(100);
+
+    queryPartialResults(upShards, upClients,
+        "q", "*:*",
+        "facet", "true",
+        "facet.field", t1,
+        "facet.field", t1,
+        "facet.limit", 5,
+        ShardParams.SHARDS_INFO, "true",
+        ShardParams.SHARDS_TOLERANT, "true");
+
+    queryPartialResults(upShards, upClients,
+        "q", "*:*",
+        "facet", "true",
+        "facet.query", i1 + ":[1 TO 50]",
+        "facet.query", i1 + ":[1 TO 50]",
+        ShardParams.SHARDS_INFO, "true",
+        ShardParams.SHARDS_TOLERANT, "true");
+
+    // test group query
+    queryPartialResults(upShards, upClients,
+        "q", "*:*",
+        "rows", 100,
+        "fl", "id," + i1,
+        "group", "true",
+        "group.query", t1 + ":kings OR " + t1 + ":eggs",
+        "group.limit", 10,
+        "sort", i1 + " asc, id asc",
+        CommonParams.TIME_ALLOWED, 10000,
+        ShardParams.SHARDS_INFO, "true",
+        ShardParams.SHARDS_TOLERANT, "true");
+
+    queryPartialResults(upShards, upClients,
+        "q", "*:*",
+        "stats", "true",
+        "stats.field", i1,
+        ShardParams.SHARDS_INFO, "true",
+        ShardParams.SHARDS_TOLERANT, "true");
+
+    queryPartialResults(upShards, upClients,
+        "q", "toyata",
+        "spellcheck", "true",
+        "spellcheck.q", "toyata",
+        "qt", "/spellCheckCompRH_Direct",
+        "shards.qt", "/spellCheckCompRH_Direct",
+        ShardParams.SHARDS_INFO, "true",
+        ShardParams.SHARDS_TOLERANT, "true");
+
+    // restart the jettys
+    for (JettySolrRunner downJetty : downJettys) {
+      downJetty.start();
+    }
+    
 
     // This index has the same number for every field
     
@@ -1035,7 +1057,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
             "stats.field", tdate_a, 
             "stats.field", tdate_b,
             "stats.calcdistinct", "true");
-    } catch (HttpSolrClient.RemoteSolrException e) {
+    } catch (BaseHttpSolrClient.RemoteSolrException e) {
       if (e.getMessage().startsWith("java.lang.NullPointerException"))  {
         fail("NullPointerException with stats request on empty index");
       } else  {
@@ -1057,7 +1079,7 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
                  rsp.getFieldStatsInfo().get(fieldName).getMin());
     query("q", "*:*", "stats", "true", "stats.field", fieldName,  
           StatsParams.STATS_CALC_DISTINCT, "true");
-    assertEquals(new EnumFieldValue(4, "Critical"),
+    assertEquals(new EnumFieldValue(11, "Critical"),
                  rsp.getFieldStatsInfo().get(fieldName).getMax());
 
     handle.put("severity", UNORDERED); // this is stupid, but stats.facet doesn't garuntee order
@@ -1122,17 +1144,22 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
     params.remove("distrib");
     setDistributedParams(params);
 
-    QueryResponse rsp = queryRandomUpServer(params,upClients);
+    if (upClients.size() == 0) {
+      return;
+    }
+    QueryResponse rsp = queryRandomUpServer(params, upClients);
 
     comparePartialResponses(rsp, controlRsp, upShards);
 
     if (stress > 0) {
       log.info("starting stress...");
-      Thread[] threads = new Thread[nThreads];
+      Set<Future<Object>> pending = new HashSet<>();;
+      ExecutorCompletionService<Object> cs = new ExecutorCompletionService<>(executor);
+      Callable[] threads = new Callable[nThreads];
       for (int i = 0; i < threads.length; i++) {
-        threads[i] = new Thread() {
+        threads[i] = new Callable() {
           @Override
-          public void run() {
+          public Object call() {
             for (int j = 0; j < stress; j++) {
               int which = r.nextInt(upClients.size());
               SolrClient client = upClients.get(which);
@@ -1145,21 +1172,32 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
                 throw new RuntimeException(e);
               }
             }
+            return null;
           }
         };
-        threads[i].start();
+        pending.add(cs.submit(threads[i]));
+      }
+      
+      while (pending.size() > 0) {
+        Future<Object> future = cs.take();
+        pending.remove(future);
+        future.get();
       }
 
-      for (Thread thread : threads) {
-        thread.join();
-      }
     }
   }
 
-  protected QueryResponse queryRandomUpServer(ModifiableSolrParams params, List<SolrClient> upClients) throws SolrServerException, IOException {
+  protected QueryResponse queryRandomUpServer(ModifiableSolrParams params, List<SolrClient> upClients)
+      throws SolrServerException, IOException {
     // query a random "up" server
-    int which = r.nextInt(upClients.size());
-    SolrClient client = upClients.get(which);
+    SolrClient client;
+    if (upClients.size() == 1) {
+      client = upClients.get(0);
+    } else {
+      int which = r.nextInt(upClients.size() - 1);
+      client = upClients.get(which);
+    }
+
     QueryResponse rsp = client.query(params);
     return rsp;
   }
@@ -1179,14 +1217,20 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
         String s = shardsArr[i];
         if (shard.contains(s)) {
           found = true;
-          // make sure that it responded if it's up
+          // make sure that it responded if it's up and the landing node didn't error before sending the request to the shard
           if (upShards.contains(s)) {
             // this is no longer true if there was a query timeout on an up shard
             // assertTrue("Expected to find numFound in the up shard info",info.get("numFound") != null);
-            assertTrue("Expected to find shardAddress in the up shard info: " + info.toString(), info.get("shardAddress") != null);
-          }
-          else {
-            assertEquals("Expected to find the "+SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY+" header set if a shard is down",
+            boolean timeAllowedError = info.get("error") != null && info.get("error").toString().contains("Time allowed to handle this request");
+            if (timeAllowedError) {
+              assertEquals("Expected to find the " + SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY + " header set if a shard is down",
+                  Boolean.TRUE, rsp.getHeader().get(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY));
+              assertTrue("Expected to find error in the down shard info: " + info.toString(), info.get("error") != null);
+            } else {
+              assertTrue("Expected timeAllowedError or to find shardAddress in the up shard info: " + info.toString(), info.get("shardAddress") != null);
+            }
+          } else {
+            assertEquals("Expected to find the " + SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY + " header set if a shard is down. Response: " + rsp,
                 Boolean.TRUE, rsp.getHeader().get(SolrQueryResponse.RESPONSE_HEADER_PARTIAL_RESULTS_KEY));
             assertTrue("Expected to find error in the down shard info: " + info.toString(), info.get("error") != null);
           }
@@ -1205,23 +1249,35 @@ public class TestDistributedSearch extends BaseDistributedSearchTestCase {
 
   private void validateCommonQueryParameters() throws Exception {
     ignoreException("parameter cannot be negative");
-    try {
+
+    SolrException e1 = expectThrows(SolrException.class, () -> {
+      SolrQuery query = new SolrQuery();
+      query.setParam("start", "non_numeric_value").setQuery("*");
+      QueryResponse resp = query(query);
+    });
+    assertEquals(ErrorCode.BAD_REQUEST.code, e1.code());
+
+    SolrException e2 = expectThrows(SolrException.class, () -> {
       SolrQuery query = new SolrQuery();
       query.setStart(-1).setQuery("*");
       QueryResponse resp = query(query);
-      fail("Expected the last query to fail, but got response: " + resp);
-    } catch (SolrException e) {
-      assertEquals(ErrorCode.BAD_REQUEST.code, e.code());
-    }
+    });
+    assertEquals(ErrorCode.BAD_REQUEST.code, e2.code());
 
-    try {
+    SolrException e3 = expectThrows(SolrException.class, () -> {
       SolrQuery query = new SolrQuery();
       query.setRows(-1).setStart(0).setQuery("*");
       QueryResponse resp = query(query);
-      fail("Expected the last query to fail, but got response: " + resp);
-    } catch (SolrException e) {
-      assertEquals(ErrorCode.BAD_REQUEST.code, e.code());
-    }
+    });
+    assertEquals(ErrorCode.BAD_REQUEST.code, e3.code());
+
+    SolrException e4 = expectThrows(SolrException.class, () -> {
+      SolrQuery query = new SolrQuery();
+      query.setParam("rows", "non_numeric_value").setQuery("*");
+      QueryResponse resp = query(query);
+    });
+    assertEquals(ErrorCode.BAD_REQUEST.code, e4.code());
+
     resetExceptionIgnores();
   }
 }

@@ -37,6 +37,7 @@ import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.util.EntityUtils;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.util.IOUtils;
+import org.apache.lucene.util.SuppressForbidden;
 
 /**
  * Base class for Http clients.
@@ -115,6 +116,7 @@ public abstract class HttpClientBase implements Closeable {
     }
   }
   
+  @SuppressForbidden(reason = "XXX: security hole")
   protected void throwKnownError(HttpResponse response, StatusLine statusLine) throws IOException {
     ObjectInputStream in = null;
     try {
@@ -127,12 +129,13 @@ public abstract class HttpClientBase implements Closeable {
     Throwable t;
     try {
       t = (Throwable) in.readObject();
+      assert t != null;
     } catch (Throwable th) { 
       throw new RuntimeException("Failed to read exception object: " + statusLine, th);
     } finally {
       in.close();
     }
-    IOUtils.reThrow(t);
+    throw IOUtils.rethrowAlways(t);
   }
   
   /**
@@ -260,9 +263,7 @@ public abstract class HttpClientBase implements Closeable {
         }
       }
     }
-    assert th != null; // extra safety - if we get here, it means the callable failed
-    IOUtils.reThrow(th);
-    return null; // silly, if we're here, IOUtils.reThrow always throws an exception 
+    throw IOUtils.rethrowAlways(th); 
   }
   
   @Override

@@ -40,7 +40,8 @@ public final class OwnCacheKeyMultiReader extends MultiReader {
 
     @Override
     public void addClosedListener(ClosedListener listener) {
-        readerClosedListeners.add(listener);
+      ensureOpen();
+      readerClosedListeners.add(listener);
     }
 
   };
@@ -56,20 +57,9 @@ public final class OwnCacheKeyMultiReader extends MultiReader {
   }
 
   @Override
-  void notifyReaderClosedListeners(Throwable th) throws IOException {
+  void notifyReaderClosedListeners() throws IOException {
     synchronized(readerClosedListeners) {
-      for(ClosedListener listener : readerClosedListeners) {
-        try {
-          listener.onClose(cacheHelper.getKey());
-        } catch (Throwable t) {
-          if (th == null) {
-            th = t;
-          } else {
-            th.addSuppressed(t);
-          }
-        }
-      }
-      IOUtils.reThrow(th);
+      IOUtils.applyToAll(readerClosedListeners, l -> l.onClose(cacheHelper.getKey()));
     }
   }
 

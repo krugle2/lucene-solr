@@ -17,7 +17,6 @@
 package org.apache.lucene.misc;
 
 import org.apache.lucene.search.similarities.ClassicSimilarity;
-import org.apache.lucene.index.FieldInvertState;
 
 /**
  * <p>
@@ -35,7 +34,7 @@ import org.apache.lucene.index.FieldInvertState;
  * subclasses can choose between.
  * </p>
  *
- * @see <a href="doc-files/ss.gnuplot">A Gnuplot file used to generate some of the visualizations refrenced from each function.</a> 
+ * @see <a href="doc-files/ss.gnuplot">A Gnuplot file used to generate some of the visualizations referenced from each function.</a> 
  */
 public class SweetSpotSimilarity extends ClassicSimilarity {
 
@@ -86,32 +85,13 @@ public class SweetSpotSimilarity extends ClassicSimilarity {
    * Sets the default function variables used by lengthNorm when no field
    * specific variables have been set.
    *
-   * @see #computeLengthNorm
+   * @see #lengthNorm
    */
   public void setLengthNormFactors(int min, int max, float steepness, boolean discountOverlaps) {
     this.ln_min = min;
     this.ln_max = max;
     this.ln_steep = steepness;
     this.discountOverlaps = discountOverlaps;
-  }
-    
-  /**
-   * Implemented as <code> state.getBoost() *
-   * computeLengthNorm(numTokens) </code> where
-   * numTokens does not count overlap tokens if
-   * discountOverlaps is true by default or true for this
-   * specific field. 
-   */
-  @Override
-  public float lengthNorm(FieldInvertState state) {
-    final int numTokens;
-
-    if (discountOverlaps)
-      numTokens = state.getLength() - state.getNumOverlap();
-    else
-      numTokens = state.getLength();
-
-    return computeLengthNorm(numTokens);
   }
 
   /**
@@ -133,7 +113,8 @@ public class SweetSpotSimilarity extends ClassicSimilarity {
    * @see #setLengthNormFactors
    * @see <a href="doc-files/ss.computeLengthNorm.svg">An SVG visualization of this function</a> 
    */
-  public float computeLengthNorm(int numTerms) {
+  @Override
+  public float lengthNorm(int numTerms) {
     final int l = ln_min;
     final int h = ln_max;
     final float s = ln_steep;
@@ -226,8 +207,7 @@ public class SweetSpotSimilarity extends ClassicSimilarity {
   public String toString() {
     StringBuilder sb = new StringBuilder();
     sb.append("SweetSpotSimilarity")
-        .append("(")
-        .append("ln_min="+ln_min+", ")
+        .append('(').append("ln_min=").append(ln_min).append(", ")
         .append("ln_max=").append(ln_max).append(", ")
         .append("ln_steep=").append(ln_steep).append(", ")
         .append("tf_base=").append(tf_base).append(", ")

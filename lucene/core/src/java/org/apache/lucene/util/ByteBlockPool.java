@@ -41,7 +41,9 @@ import static org.apache.lucene.util.RamUsageEstimator.NUM_BYTES_OBJECT_REF;
  * 
  * @lucene.internal
  **/
-public final class ByteBlockPool {
+public final class ByteBlockPool implements Accountable {
+  private static final long BASE_RAM_BYTES = RamUsageEstimator.shallowSizeOfInstance(ByteBlockPool.class);
+
   public final static int BYTE_BLOCK_SHIFT = 15;
   public final static int BYTE_BLOCK_SIZE = 1 << BYTE_BLOCK_SHIFT;
   public final static int BYTE_BLOCK_MASK = BYTE_BLOCK_SIZE - 1;
@@ -136,7 +138,7 @@ public final class ByteBlockPool {
   
   /**
    * Resets the pool to its initial state reusing the first buffer and fills all
-   * buffers with <tt>0</tt> bytes before they reused or passed to
+   * buffers with <code>0</code> bytes before they reused or passed to
    * {@link Allocator#recycleByteBlocks(byte[][], int, int)}. Calling
    * {@link ByteBlockPool#nextBuffer()} is not needed after reset.
    */
@@ -147,7 +149,7 @@ public final class ByteBlockPool {
   /**
    * Expert: Resets the pool to its initial state reusing the first buffer. Calling
    * {@link ByteBlockPool#nextBuffer()} is not needed after reset. 
-   * @param zeroFillBuffers if <code>true</code> the buffers are filled with <tt>0</tt>. 
+   * @param zeroFillBuffers if <code>true</code> the buffers are filled with <code>0</code>. 
    *        This should be set to <code>true</code> if this pool is used with slices.
    * @param reuseFirst if <code>true</code> the first buffer will be reused and calling
    *        {@link ByteBlockPool#nextBuffer()} is not needed after reset iff the 
@@ -324,59 +326,44 @@ public final class ByteBlockPool {
    * the current position.
    */
   public void append(final BytesRef bytes) {
-    int length = bytes.length;
-    if (length == 0) {
-      return;
-    }
+    int bytesLeft = bytes.length;
     int offset = bytes.offset;
-    int overflow = (length + byteUpto) - BYTE_BLOCK_SIZE;
-    do {
-      if (overflow <= 0) { 
-        System.arraycopy(bytes.bytes, offset, buffer, byteUpto, length);
-        byteUpto += length;
+    while (bytesLeft > 0) {
+      int bufferLeft = BYTE_BLOCK_SIZE - byteUpto;
+      if (bytesLeft < bufferLeft) {
+        // fits within current buffer
+        System.arraycopy(bytes.bytes, offset, buffer, byteUpto, bytesLeft);
+        byteUpto += bytesLeft;
         break;
       } else {
-        final int bytesToCopy = length-overflow;
-        if (bytesToCopy > 0) {
-          System.arraycopy(bytes.bytes, offset, buffer, byteUpto, bytesToCopy);
-          offset += bytesToCopy;
-          length -= bytesToCopy;
+        // fill up this buffer and move to next one
+        if (bufferLeft > 0) {
+          System.arraycopy(bytes.bytes, offset, buffer, byteUpto, bufferLeft);
         }
         nextBuffer();
-        overflow = overflow - BYTE_BLOCK_SIZE;
+        bytesLeft -= bufferLeft;
+        offset += bufferLeft;
       }
-    }  while(true);
+    }
   }
   
   /**
-   * Reads bytes bytes out of the pool starting at the given offset with the given  
-   * length into the given byte array at offset <tt>off</tt>.
+   * Reads bytes out of the pool starting at the given offset with the given  
+   * length into the given byte array at offset <code>off</code>.
    * <p>Note: this method allows to copy across block boundaries.</p>
    */
-  public void readBytes(final long offset, final byte bytes[], final int off, final int length) {
-    if (length == 0) {
-      return;
-    }
-    int bytesOffset = off;
-    int bytesLength = length;
+  public void readBytes(final long offset, final byte bytes[], int bytesOffset, int bytesLength) {
+    int bytesLeft = bytesLength;
     int bufferIndex = (int) (offset >> BYTE_BLOCK_SHIFT);
-    byte[] buffer = buffers[bufferIndex];
     int pos = (int) (offset & BYTE_BLOCK_MASK);
-    int overflow = (pos + length) - BYTE_BLOCK_SIZE;
-    do {
-      if (overflow <= 0) {
-        System.arraycopy(buffer, pos, bytes, bytesOffset, bytesLength);
-        break;
-      } else {
-        final int bytesToCopy = length - overflow;
-        System.arraycopy(buffer, pos, bytes, bytesOffset, bytesToCopy);
-        pos = 0;
-        bytesLength -= bytesToCopy;
-        bytesOffset += bytesToCopy;
-        buffer = buffers[++bufferIndex];
-        overflow = overflow - BYTE_BLOCK_SIZE;
-      }
-    } while (true);
+    while (bytesLeft > 0) {
+      byte[] buffer = buffers[bufferIndex++];
+      int chunk = Math.min(bytesLeft, BYTE_BLOCK_SIZE - pos);
+      System.arraycopy(buffer, pos, bytes, bytesOffset, chunk);
+      bytesOffset += chunk;
+      bytesLeft -= chunk;
+      pos = 0;
+    }
   }
 
   /**
@@ -406,6 +393,20 @@ public final class ByteBlockPool {
     int pos = (int) (offset & BYTE_BLOCK_MASK);
     byte[] buffer = buffers[bufferIndex];
     return buffer[pos];
+  }
+
+  @Override
+  public long ramBytesUsed() {
+    long size = BASE_RAM_BYTES;
+    size += RamUsageEstimator.sizeOfObject(buffer);
+    size += RamUsageEstimator.shallowSizeOf(buffers);
+    for (byte[] buf : buffers) {
+      if (buf == buffer) {
+        continue;
+      }
+      size += RamUsageEstimator.sizeOfObject(buf);
+    }
+    return size;
   }
 }
 

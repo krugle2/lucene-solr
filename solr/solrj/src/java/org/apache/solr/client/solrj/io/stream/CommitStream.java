@@ -39,10 +39,11 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Sends a commit message to a SolrCloud collection
+ * @since 6.3.0
  */
 public class CommitStream extends TupleStream implements Expressible {
   private static final long serialVersionUID = 1L;
-  private static final Logger LOG = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   // Part of expression / passed in
   private String collection;
@@ -251,7 +252,7 @@ public class CommitStream extends TupleStream implements Expressible {
     try {
       clientCache.getCloudSolrClient(zkHost).commit(collection, waitFlush, waitSearcher, softCommit);
     } catch (SolrServerException | IOException e) {
-      LOG.warn(String.format(Locale.ROOT, "Unable to commit documents to collection '%s' due to unexpected error.", collection), e);
+      log.warn(String.format(Locale.ROOT, "Unable to commit documents to collection '%s' due to unexpected error.", collection), e);
       String className = e.getClass().getName();
       String message = e.getMessage();
       throw new IOException(String.format(Locale.ROOT,"Unexpected error when committing documents to collection %s- %s:%s", collection, className, message));

@@ -21,7 +21,9 @@ import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedNumericDocValuesField;
@@ -31,6 +33,7 @@ import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.search.IndexOrDocValuesQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SortedNumericSelector;
+import org.apache.lucene.search.SortField;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.CharsRef;
@@ -55,6 +58,33 @@ import org.slf4j.LoggerFactory;
 public abstract class PointField extends NumericFieldType {
 
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+  
+  /**
+   * <p>
+   * The Test framework can set this global variable to instruct PointField that
+   * (on init) it should be tollerant of the <code>precisionStep</code> argument used by TrieFields.
+   * This allows for simple randomization of TrieFields and PointFields w/o extensive duplication
+   * of <code>&lt;fieldType/&gt;</code> declarations.
+   * </p>
+   *
+   * <p>NOTE: When {@link TrieField} is removed, this boolean must also be removed</p>
+   *
+   * @lucene.internal
+   * @lucene.experimental
+   */
+  public static boolean TEST_HACK_IGNORE_USELESS_TRIEFIELD_ARGS = false;
+  
+  /** 
+   * NOTE: This method can be removed completely when
+   * {@link #TEST_HACK_IGNORE_USELESS_TRIEFIELD_ARGS} is removed 
+   */
+  @Override
+  protected void init(IndexSchema schema, Map<String, String> args) {
+    super.init(schema, args);
+    if (TEST_HACK_IGNORE_USELESS_TRIEFIELD_ARGS) {
+      args.remove("precisionStep");
+    }
+  }
 
   @Override
   public boolean isPointField() {
@@ -111,7 +141,9 @@ public abstract class PointField extends NumericFieldType {
   }
 
   @Override
-  public abstract Query getSetQuery(QParser parser, SchemaField field, Collection<String> externalVals);
+  public Query getSetQuery(QParser parser, SchemaField field, Collection<String> externalVals) {
+    return super.getSetQuery(parser, field, externalVals);
+  }
 
   @Override
   public Query getFieldQuery(QParser parser, SchemaField field, String externalVal) {
@@ -124,17 +156,14 @@ public abstract class PointField extends NumericFieldType {
       return new IndexOrDocValuesQuery(pointsQuery, dvQuery);
     } else {
       return getExactQuery(field, externalVal);
-    }
+    } 
   }
 
   protected abstract Query getExactQuery(SchemaField field, String externalVal);
 
-  public abstract Query getPointRangeQuery(QParser parser, SchemaField field, String min, String max, boolean minInclusive,
-      boolean maxInclusive);
-
   @Override
-  public Query getRangeQuery(QParser parser, SchemaField field, String min, String max, boolean minInclusive,
-      boolean maxInclusive) {
+  protected Query getSpecializedRangeQuery(QParser parser, SchemaField field, String min, String max, boolean minInclusive,
+                                           boolean maxInclusive) {
     if (!field.indexed() && field.hasDocValues()) {
       return getDocValuesRangeQuery(parser, field, min, max, minInclusive, maxInclusive);
     } else if (field.indexed() && field.hasDocValues()) {
@@ -145,6 +174,9 @@ public abstract class PointField extends NumericFieldType {
       return getPointRangeQuery(parser, field, min, max, minInclusive, maxInclusive);
     }
   }
+
+  public abstract Query getPointRangeQuery(QParser parser, SchemaField field, String min, String max, boolean minInclusive,
+                                           boolean maxInclusive);
 
   @Override
   public String storedToReadable(IndexableField f) {
@@ -187,6 +219,14 @@ public abstract class PointField extends NumericFieldType {
   }
   
   protected abstract String indexedToReadable(BytesRef indexedForm);
+
+  @Override
+  public Query getPrefixQuery(QParser parser, SchemaField sf, String termStr) {
+    if ("".equals(termStr)) {
+      return getExistenceQuery(parser, sf);
+    }
+    throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Can't run prefix queries on numeric fields");
+  }
   
   protected boolean isFieldUsed(SchemaField field) {
     boolean indexed = field.indexed();
@@ -204,34 +244,48 @@ public abstract class PointField extends NumericFieldType {
 
   @Override
   public List<IndexableField> createFields(SchemaField sf, Object value) {
-    if (!(sf.hasDocValues() || sf.stored())) {
-      return Collections.singletonList(createField(sf, value));
+    if (!isFieldUsed(sf)) {
+      return Collections.emptyList();
     }
-    List<IndexableField> fields = new ArrayList<>();
-    final IndexableField field = createField(sf, value);
-    fields.add(field);
+    List<IndexableField> fields = new ArrayList<>(3);
+    IndexableField field = null;
+    if (sf.indexed()) {
+      field = createField(sf, value);
+      fields.add(field);
+    }
     
     if (sf.hasDocValues()) {
+      final Number numericValue;
+      if (field == null) {
+        final Object nativeTypeObject = toNativeType(value);
+        if (getNumberType() == NumberType.DATE) {
+          numericValue = ((Date)nativeTypeObject).getTime();
+        } else {
+          numericValue = (Number) nativeTypeObject;
+        }
+      } else {
+        numericValue = field.numericValue();
+      }
       final long bits;
       if (!sf.multiValued()) {
-        if (field.numericValue() instanceof Integer || field.numericValue() instanceof Long) {
-          bits = field.numericValue().longValue();
-        } else if (field.numericValue() instanceof Float) {
-          bits = Float.floatToIntBits(field.numericValue().floatValue());
+        if (numericValue instanceof Integer || numericValue instanceof Long) {
+          bits = numericValue.longValue();
+        } else if (numericValue instanceof Float) {
+          bits = Float.floatToIntBits(numericValue.floatValue());
         } else {
-          assert field.numericValue() instanceof Double;
-          bits = Double.doubleToLongBits(field.numericValue().doubleValue());
+          assert numericValue instanceof Double;
+          bits = Double.doubleToLongBits(numericValue.doubleValue());
         }
         fields.add(new NumericDocValuesField(sf.getName(), bits));
       } else {
         // MultiValued
-        if (field.numericValue() instanceof Integer || field.numericValue() instanceof Long) {
-          bits = field.numericValue().longValue();
-        } else if (field.numericValue() instanceof Float) {
-          bits = NumericUtils.floatToSortableInt(field.numericValue().floatValue());
+        if (numericValue instanceof Integer || numericValue instanceof Long) {
+          bits = numericValue.longValue();
+        } else if (numericValue instanceof Float) {
+          bits = NumericUtils.floatToSortableInt(numericValue.floatValue());
         } else {
-          assert field.numericValue() instanceof Double;
-          bits = NumericUtils.doubleToSortableLong(field.numericValue().doubleValue());
+          assert numericValue instanceof Double;
+          bits = NumericUtils.doubleToSortableLong(numericValue.doubleValue());
         }
         fields.add(new SortedNumericDocValuesField(sf.getName(), bits));
       }
@@ -245,7 +299,8 @@ public abstract class PointField extends NumericFieldType {
   protected abstract StoredField getStoredField(SchemaField sf, Object value);
 
   @Override
-  public void checkSchemaField(final SchemaField field) {
-    // PointFields support DocValues
+  public SortField getSortField(SchemaField field, boolean top) {
+    return getNumericSort(field, getNumberType(), top);
   }
+  
 }

@@ -21,13 +21,14 @@ import java.util.Collection;
 import java.util.List;
 import java.util.NoSuchElementException;
 
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.Version;
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.SpatialRelation;
 import org.locationtech.spatial4j.shape.impl.RectangleImpl;
-import org.apache.lucene.util.BytesRef;
 
 /**
  * Uses a compact binary representation of 8 bytes to encode a spatial quad trie.
@@ -60,7 +61,9 @@ public class PackedQuadPrefixTree extends QuadPrefixTree {
   public static class Factory extends QuadPrefixTree.Factory {
     @Override
     protected SpatialPrefixTree newSPT() {
-      return new PackedQuadPrefixTree(ctx, maxLevels != null ? maxLevels : MAX_LEVELS_POSSIBLE);
+      PackedQuadPrefixTree tree = new PackedQuadPrefixTree(ctx, maxLevels != null ? maxLevels : MAX_LEVELS_POSSIBLE);
+      tree.robust = getVersion().onOrAfter(Version.LUCENE_8_3_0);
+      return tree;
     }
   }
 
@@ -83,25 +86,66 @@ public class PackedQuadPrefixTree extends QuadPrefixTree {
 
   @Override
   public Cell getCell(Point p, int level) {
-    List<Cell> cells = new ArrayList<>(1);
-    build(xmid, ymid, 0, cells, 0x0L, ctx.makePoint(p.getX(), p.getY()), level);
-    return cells.get(0);//note cells could be longer if p on edge
+    if (!robust) { // old method
+      List<Cell> cells = new ArrayList<>(1);
+      buildNotRobustly(xmid, ymid, 0, cells, 0x0L, ctx.makePoint(p.getX(), p.getY()), level);
+      if (!cells.isEmpty()) {
+        return cells.get(0);//note cells could be longer if p on edge
+      }
+    }
+
+    double currentXmid = xmid;
+    double currentYmid = ymid;
+    double xp = p.getX();
+    double yp = p.getY();
+    long  term = 0L;
+    int levelLimit = level > maxLevels ? maxLevels : level;
+    SpatialRelation rel = SpatialRelation.CONTAINS;
+    for (int lvl = 0; lvl < levelLimit; lvl++){
+      int quad = battenberg(currentXmid, currentYmid, xp, yp);
+      double halfWidth = levelW[lvl + 1];
+      double halfHeight = levelH[lvl + 1];
+      switch(quad){
+        case 0:
+          currentXmid -= halfWidth;
+          currentYmid += halfHeight;
+          break;
+        case 1:
+          currentXmid += halfWidth;
+          currentYmid += halfHeight;
+          break;
+        case 2:
+          currentXmid -= halfWidth;
+          currentYmid -= halfHeight;
+          break;
+        case 3:
+          currentXmid += halfWidth;
+          currentYmid -= halfHeight;
+          break;
+        default:
+      }
+      // set bits for next level
+      term |= (((long)(quad))<<(64-((lvl + 1)<<1)));
+      // increment level
+      term = ((term>>>1)+1)<<1;
+    }
+    return new PackedQuadCell(term, rel);
   }
 
-  protected void build(double x, double y, int level, List<Cell> matches, long term, Shape shape, int maxLevel) {
+  protected void buildNotRobustly(double x, double y, int level, List<Cell> matches, long term, Shape shape, int maxLevel) {
     double w = levelW[level] / 2;
     double h = levelH[level] / 2;
 
     // Z-Order
     // http://en.wikipedia.org/wiki/Z-order_%28curve%29
-    checkBattenberg(QUAD[0], x - w, y + h, level, matches, term, shape, maxLevel);
-    checkBattenberg(QUAD[1], x + w, y + h, level, matches, term, shape, maxLevel);
-    checkBattenberg(QUAD[2], x - w, y - h, level, matches, term, shape, maxLevel);
-    checkBattenberg(QUAD[3], x + w, y - h, level, matches, term, shape, maxLevel);
+    checkBattenbergNotRobustly(QUAD[0], x - w, y + h, level, matches, term, shape, maxLevel);
+    checkBattenbergNotRobustly(QUAD[1], x + w, y + h, level, matches, term, shape, maxLevel);
+    checkBattenbergNotRobustly(QUAD[2], x - w, y - h, level, matches, term, shape, maxLevel);
+    checkBattenbergNotRobustly(QUAD[3], x + w, y - h, level, matches, term, shape, maxLevel);
   }
 
-  protected void checkBattenberg(byte quad, double cx, double cy, int level, List<Cell> matches,
-                               long term, Shape shape, int maxLevel) {
+  protected void checkBattenbergNotRobustly(byte quad, double cx, double cy, int level, List<Cell> matches,
+                                 long term, Shape shape, int maxLevel) {
     // short-circuit if we find a match for the point (no need to continue recursion)
     if (shape instanceof Point && !matches.isEmpty())
       return;
@@ -122,7 +166,7 @@ public class PackedQuadPrefixTree extends QuadPrefixTree {
     if (SpatialRelation.CONTAINS == v || (level >= maxLevel)) {
       matches.add(new PackedQuadCell(term, v.transpose()));
     } else {// SpatialRelation.WITHIN, SpatialRelation.INTERSECTS
-      build(cx, cy, level, matches, term, shape, maxLevel);
+      buildNotRobustly(cx, cy, level, matches, term, shape, maxLevel);
     }
   }
 
@@ -161,7 +205,7 @@ public class PackedQuadPrefixTree extends QuadPrefixTree {
       super(null, 0, 0);
       this.term = term;
       this.b_off = 0;
-      this.bytes = longToByteArray(this.term);
+      this.bytes = longToByteArray(this.term, new byte[8]);
       this.b_len = 8;
       readLeafAdjust();
     }
@@ -229,30 +273,37 @@ public class PackedQuadPrefixTree extends QuadPrefixTree {
 
     @Override
     public BytesRef getTokenBytesWithLeaf(BytesRef result) {
-      if (isLeaf) {
-        term |= 0x1L;
+      result = getTokenBytesNoLeaf(result);
+      if (isLeaf()) {
+        result.bytes[8 - 1] |= 0x1L; // set leaf
       }
-      return getTokenBytesNoLeaf(result);
+      return result;
     }
 
     @Override
     public BytesRef getTokenBytesNoLeaf(BytesRef result) {
-      if (result == null)
-        return new BytesRef(bytes, b_off, b_len);
-      result.bytes = longToByteArray(this.term);
+      if (result == null) {
+        result = new BytesRef(8);
+      } else if (result.bytes.length < 8) {
+        result.bytes = new byte[8];
+      }
+      result.bytes = longToByteArray(this.term, result.bytes);
       result.offset = 0;
-      result.length = result.bytes.length;
+      result.length = 8;
+      // no leaf
+      result.bytes[8 - 1] &= ~1; // clear last bit (leaf bit)
       return result;
     }
 
     @Override
     public int compareToNoLeaf(Cell fromCell) {
       PackedQuadCell b = (PackedQuadCell) fromCell;
+      //TODO clear last bit without the condition
       final long thisTerm = (((0x1L)&term) == 0x1L) ? term-1 : term;
       final long fromTerm = (((0x1L)&b.term) == 0x1L) ? b.term-1 : b.term;
       final int result = Long.compareUnsigned(thisTerm, fromTerm);
       assert Math.signum(result)
-          == Math.signum(compare(longToByteArray(thisTerm), 0, 8, longToByteArray(fromTerm), 0, 8)); // TODO remove
+          == Math.signum(compare(longToByteArray(thisTerm, new byte[8]), 0, 8, longToByteArray(fromTerm, new byte[8]), 0, 8)); // TODO remove
       return result;
     }
 
@@ -343,8 +394,7 @@ public class PackedQuadPrefixTree extends QuadPrefixTree {
           | ((long)b7 & 255L) << 8 | (long)b8 & 255L;
     }
 
-    private byte[] longToByteArray(long value) {
-      byte[] result = new byte[8];
+    private byte[] longToByteArray(long value, byte[] result) {
       for(int i = 7; i >= 0; --i) {
         result[i] = (byte)((int)(value & 255L));
         value >>= 8;
