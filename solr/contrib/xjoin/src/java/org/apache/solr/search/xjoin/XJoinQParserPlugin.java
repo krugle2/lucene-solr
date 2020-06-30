@@ -41,10 +41,9 @@ import org.apache.solr.schema.FieldType;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.QParserPlugin;
 import org.apache.solr.search.QueryParsing;
-import org.apache.solr.search.QueryWrapperFilter;
 import org.apache.solr.search.SolrConstantScoreQuery;
 import org.apache.solr.search.SyntaxError;
-
+import org.apache.solr.search.join.BlockJoinParentQParser;
 /**
  * QParserPlugin for extracting join ids from the results stored in XJoin search
  * components.
@@ -155,7 +154,7 @@ public class XJoinQParserPlugin extends QParserPlugin {
         return new BooleanQuery.Builder().build(); // matches nothing
       }
       Query query = method.makeQuery(joinField, bytesRefs);
-      return new SolrConstantScoreQuery(new QueryWrapperFilter(query));
+      return new SolrConstantScoreQuery(BlockJoinParentQParser.getCachedFilter(req, query));
     }
     
     @Override
